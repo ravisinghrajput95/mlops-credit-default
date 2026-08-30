@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.5.11"
+
+jobs:
+  quality:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        # --frozen fails if uv.lock is stale, so a dependency change that was not
+        # committed cannot pass CI.
+        run: uv sync --all-extras --frozen
+
+      - name: Lint
+        run: uv run ruff check src tests scripts flows
+
+      - name: Check formatting
+        run: uv run ruff format --check src tests scripts flows
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        # The suite is hermetic: it builds its own synthetic frames and never
+        # touches the network or a live MLflow server.
+        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  data-contract:
+    name: Data contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv sync --all-extras --frozen
+
+      - name: Validate the real dataset against the schema
+        # This job hits the live UCI archive on purpose: it is what catches the
+        # upstream file changing shape, which unit tests on synthetic data cannot.
+        run: |
+          uv run python -m credit_default.data.ingest
+          uv run python -m credit_default.data.split
+
+  image:
+    name: Build API image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: false
+          load: true
+          tags: credit-default-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image must stay inside Artifact Registry's free tier
+        # The free tier is 0.5 GB. Failing here is far cheaper than discovering
+        # the overage on a bill.
+        run: |
+          BYTES=$(docker image inspect credit-default-api:ci --format '{{.Size}}')
+          MB=$((BYTES / 1024 / 1024))
+          echo "Image size: ${MB} MB"
+          if [ "$MB" -gt 450 ]; then
+            echo "::error::Image is ${MB} MB, over the 450 MB budget."
+            exit 1
+          fi
+
+      - name: Smoke test the image
+        run: |
+          docker run -d --name api -p 8000:8000 -e MODEL_SOURCE=local credit-default-api:ci
+          for i in $(seq 1 30); do
+            if curl -sf localhost:8000/health > /dev/null; then break; fi
+            sleep 2
+          done
+          # No model is baked in, so degraded is the correct answer here; what is
+          # being tested is that the container boots and serves at all.
+          curl -sf localhost:8000/health | tee /dev/stderr | grep -q '"status"'
+          docker rm -f api

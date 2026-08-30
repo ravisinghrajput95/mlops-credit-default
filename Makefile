@@ -7,7 +7,7 @@ TF := terraform -chdir=infra/gcp
 
 .PHONY: help setup lint format typecheck test test-cov check \
         ingest split train evaluate promote pipeline \
-        serve drift simulate-drift \
+        serve drift simulate-drift flow-train flow-drift flow-retrain \
         up down logs ps clean \
         docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost
 
@@ -67,6 +67,17 @@ drift: ## Compare the current cohort against reference
 simulate-drift: ## Inject SYNTHETIC drift to demo the monitor (undo with: make split)
 	$(UV) python scripts/simulate_drift.py
 
+# ------------------------------------------------------------ orchestration -
+
+flow-train: ## Run the training flow via Prefect
+	$(UV) python -c "from flows.pipeline import training_flow; training_flow()"
+
+flow-drift: ## Run the drift-check flow via Prefect
+	$(UV) python -c "from flows.pipeline import drift_flow; drift_flow()"
+
+flow-retrain: ## Retrain if drift is detected (registers @challenger; never promotes)
+	$(UV) python -c "from flows.pipeline import retrain_on_drift; retrain_on_drift()"
+
 # --------------------------------------------------------------- serving ---
 
 serve: ## Run the API locally against the on-disk model
@@ -81,6 +92,7 @@ up: ## Start the full local stack (API, MLflow, Postgres, Prometheus, Grafana)
 	@echo "  MLflow      http://localhost:5001"
 	@echo "  Prometheus  http://localhost:9090"
 	@echo "  Grafana     http://localhost:3000  (admin / admin)"
+	@echo "  Prefect     http://localhost:4200"
 
 down: ## Stop the stack
 	$(COMPOSE) down

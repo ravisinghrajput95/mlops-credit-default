@@ -96,10 +96,13 @@ class Settings(BaseSettings):
     # --- serving -----------------------------------------------------------
     api_host: str = "0.0.0.0"  # bound inside a container
     api_port: int = 8000
-    # "registry" pulls the aliased model from MLflow; "local" loads from disk so
-    # the API can start with no MLflow server reachable (CI, offline demo).
-    model_source: Literal["registry", "local"] = "local"
+    # "registry" pulls the aliased model from MLflow (the compose stack); "local"
+    # loads from disk (CI and offline demos); "gcs" loads from object storage,
+    # which is what Cloud Run uses -- there is no MLflow server in the cloud
+    # deployment because Cloud SQL has no always-free tier.
+    model_source: Literal["registry", "local", "gcs"] = "local"
     local_model_path: Path = PROJECT_ROOT / "data" / "models" / "model"
+    gcs_model_uri: str = ""
 
     # --- prediction sink ---------------------------------------------------
     # Postgres locally (docker-compose); GCS Parquet in the cloud, which keeps

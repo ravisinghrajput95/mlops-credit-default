@@ -46,7 +46,9 @@ def apply_drift(frame: pd.DataFrame, severity: float, seed: int) -> pd.DataFrame
         drifted.loc[slip, column] = (drifted.loc[slip, column] + rng.integers(1, 3)).clip(-2, 9)
 
     # Issuers cut credit limits.
-    drifted["LIMIT_BAL"] = (drifted["LIMIT_BAL"] * (1 - 0.35 * severity)).astype(int).clip(lower=10_000)
+    drifted["LIMIT_BAL"] = (
+        (drifted["LIMIT_BAL"] * (1 - 0.35 * severity)).astype(int).clip(lower=10_000)
+    )
 
     # Customers pay down less.
     for column in PAY_AMT_COLUMNS:
@@ -56,7 +58,9 @@ def apply_drift(frame: pd.DataFrame, severity: float, seed: int) -> pd.DataFrame
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--severity", type=float, default=0.6, help="0 = none, 1 = severe.")
     parser.add_argument("--output", type=Path, default=None, help="Defaults to the current cohort.")
     args = parser.parse_args()
@@ -73,15 +77,18 @@ def main() -> None:
     logger.info("Severity %.2f applied to %d rows -> %s", args.severity, len(drifted), destination)
     logger.info(
         "  LIMIT_BAL mean  %10.0f -> %10.0f",
-        source["LIMIT_BAL"].mean(), drifted["LIMIT_BAL"].mean(),
+        source["LIMIT_BAL"].mean(),
+        drifted["LIMIT_BAL"].mean(),
     )
     logger.info(
         "  PAY_0 mean      %10.2f -> %10.2f",
-        source["PAY_0"].mean(), drifted["PAY_0"].mean(),
+        source["PAY_0"].mean(),
+        drifted["PAY_0"].mean(),
     )
     logger.info(
         "  PAY_AMT1 mean   %10.0f -> %10.0f",
-        source["PAY_AMT1"].mean(), drifted["PAY_AMT1"].mean(),
+        source["PAY_AMT1"].mean(),
+        drifted["PAY_AMT1"].mean(),
     )
     if TARGET in source:
         logger.info("  (labels left untouched; only the feature distribution is shifted)")

@@ -1,0 +1,88 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "docker/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/cd.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+# Workload Identity Federation instead of a service-account JSON key: GitHub
+# mints a short-lived OIDC token that GCP exchanges for credentials, so there is
+# no long-lived secret in the repository to leak or rotate. `id-token: write` is
+# what allows the runner to request that token.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Build and deploy to Cloud Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Skipped automatically on forks and before the cloud project exists, so the
+    # workflow does not sit red in a repository that has never been deployed.
+    if: vars.GCP_PROJECT_ID != ''
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push
+        id: build
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/credit-default/api
+        run: |
+          docker build -f docker/api.Dockerfile \
+            -t "$IMAGE:${{ github.sha }}" \
+            -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+          echo "image=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy
+        run: |
+          gcloud run deploy credit-default-api \
+            --image "${{ steps.build.outputs.image }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --min-instances 0 \
+            --max-instances 2 \
+            --memory 1Gi \
+            --set-env-vars "MODEL_SOURCE=gcs,GCS_MODEL_URI=${{ vars.GCS_MODEL_URI }},PREDICTION_SINK=gcs,GCS_PREDICTION_PREFIX=${{ vars.GCS_PREDICTION_PREFIX }}"
+
+      - name: Verify the deployment serves traffic
+        run: |
+          URL=$(gcloud run services describe credit-default-api \
+            --region "${{ vars.GCP_REGION }}" --format 'value(status.url)')
+          echo "Deployed to $URL"
+          for i in $(seq 1 20); do
+            if curl -sf "$URL/health" | grep -q '"status":"ok"'; then
+              echo "Health check passed."
+              echo "### Deployed to $URL" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The service did not become healthy."
+          exit 1

@@ -154,14 +154,18 @@ def train_candidate(
 
     with mlflow.start_run(run_name=candidate.name):
         mlflow.log_params(candidate.params)
-        mlflow.log_params({"train_rows": len(train), "test_rows": len(test), "seed": settings.random_seed})
+        mlflow.log_params(
+            {"train_rows": len(train), "test_rows": len(test), "seed": settings.random_seed}
+        )
 
         pipeline.fit(train[FEATURES], train[TARGET])
         probabilities = pipeline.predict_proba(test[FEATURES])[:, 1]
         metrics = compute_metrics(test[TARGET], probabilities)
         mlflow.log_metrics(metrics)
 
-        for path in _plot_diagnostics(test[TARGET], probabilities, settings.reports_dir / candidate.name):
+        for path in _plot_diagnostics(
+            test[TARGET], probabilities, settings.reports_dir / candidate.name
+        ):
             mlflow.log_artifact(str(path), artifact_path="diagnostics")
 
         # The signature is what lets the serving layer reject malformed input at

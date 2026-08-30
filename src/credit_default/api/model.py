@@ -1,10 +1,17 @@
 """Model loading for the serving layer.
 
-Two sources are supported. ``registry`` pulls the model behind the ``champion``
-alias from MLflow, which is what runs in the compose stack. ``local`` loads a
-directory saved by ``train.py``, which lets the API and its tests start with no
-MLflow server reachable -- necessary in CI and for the Cloud Run image, which
-carries its model rather than depending on a tracking server at boot.
+Three sources are supported:
+
+``registry``
+    Pulls the model behind the ``champion`` alias from MLflow. This is what the
+    local compose stack uses.
+``local``
+    Loads a directory saved by ``train.py``, so the API and its tests start with
+    no MLflow server reachable. Used in CI and for offline demos.
+``gcs``
+    Loads the artifact from object storage. This is what Cloud Run uses: the
+    cloud deployment runs no MLflow server, because Cloud SQL has no always-free
+    tier and the tracking server would need one.
 """
 
 from __future__ import annotations
@@ -50,9 +57,7 @@ def load_model(settings: Settings) -> ModelHandle:
 
             version = str(
                 MlflowClient()
-                .get_model_version_by_alias(
-                    settings.registered_model_name, settings.champion_alias
-                )
+                .get_model_version_by_alias(settings.registered_model_name, settings.champion_alias)
                 .version
             )
         except Exception:  # version is informational only
@@ -60,6 +65,13 @@ def load_model(settings: Settings) -> ModelHandle:
 
         logger.info("Loaded %s (version %s)", uri, version)
         return ModelHandle(model, version, "registry")
+
+    if settings.model_source == "gcs":
+        if not settings.gcs_model_uri:
+            raise ValueError("GCS_MODEL_URI must be set when MODEL_SOURCE=gcs")
+        model = mlflow.sklearn.load_model(settings.gcs_model_uri)
+        logger.info("Loaded model from %s", settings.gcs_model_uri)
+        return ModelHandle(model, settings.gcs_model_uri.rstrip("/").split("/")[-1], "gcs")
 
     path = settings.local_model_path
     if not path.exists():

@@ -57,12 +57,29 @@ class CreditApplication(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
-                    "LIMIT_BAL": 200000, "SEX": 2, "EDUCATION": 2, "MARRIAGE": 1, "AGE": 35,
-                    "PAY_0": 0, "PAY_2": 0, "PAY_3": 0, "PAY_4": 0, "PAY_5": 0, "PAY_6": 0,
-                    "BILL_AMT1": 50000, "BILL_AMT2": 48000, "BILL_AMT3": 46000,
-                    "BILL_AMT4": 44000, "BILL_AMT5": 42000, "BILL_AMT6": 40000,
-                    "PAY_AMT1": 3000, "PAY_AMT2": 3000, "PAY_AMT3": 3000,
-                    "PAY_AMT4": 3000, "PAY_AMT5": 3000, "PAY_AMT6": 3000,
+                    "LIMIT_BAL": 200000,
+                    "SEX": 2,
+                    "EDUCATION": 2,
+                    "MARRIAGE": 1,
+                    "AGE": 35,
+                    "PAY_0": 0,
+                    "PAY_2": 0,
+                    "PAY_3": 0,
+                    "PAY_4": 0,
+                    "PAY_5": 0,
+                    "PAY_6": 0,
+                    "BILL_AMT1": 50000,
+                    "BILL_AMT2": 48000,
+                    "BILL_AMT3": 46000,
+                    "BILL_AMT4": 44000,
+                    "BILL_AMT5": 42000,
+                    "BILL_AMT6": 40000,
+                    "PAY_AMT1": 3000,
+                    "PAY_AMT2": 3000,
+                    "PAY_AMT3": 3000,
+                    "PAY_AMT4": 3000,
+                    "PAY_AMT5": 3000,
+                    "PAY_AMT6": 3000,
                 }
             ]
         }

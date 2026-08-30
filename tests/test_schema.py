@@ -36,11 +36,11 @@ def test_valid_frame_passes(frame):
 @pytest.mark.parametrize(
     ("column", "bad_value"),
     [
-        ("AGE", 5),           # below the documented minimum
-        ("SEX", 3),           # outside the documented codes
+        ("AGE", 5),  # below the documented minimum
+        ("SEX", 3),  # outside the documented codes
         ("LIMIT_BAL", -100),  # a credit limit cannot be negative
-        ("PAY_AMT1", -1),     # a payment tendered cannot be negative
-        ("PAY_0", 99),        # outside the repayment-status range
+        ("PAY_AMT1", -1),  # a payment tendered cannot be negative
+        ("PAY_0", 99),  # outside the repayment-status range
     ],
 )
 def test_out_of_range_values_are_rejected(frame, column, bad_value):

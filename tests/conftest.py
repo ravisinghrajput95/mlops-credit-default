@@ -48,8 +48,17 @@ def frame() -> pd.DataFrame:
 def application() -> dict[str, int]:
     """A single well-formed API payload."""
     payload = {
-        "LIMIT_BAL": 200000, "SEX": 2, "EDUCATION": 2, "MARRIAGE": 1, "AGE": 35,
-        "PAY_0": 0, "PAY_2": 0, "PAY_3": 0, "PAY_4": 0, "PAY_5": 0, "PAY_6": 0,
+        "LIMIT_BAL": 200000,
+        "SEX": 2,
+        "EDUCATION": 2,
+        "MARRIAGE": 1,
+        "AGE": 35,
+        "PAY_0": 0,
+        "PAY_2": 0,
+        "PAY_3": 0,
+        "PAY_4": 0,
+        "PAY_5": 0,
+        "PAY_6": 0,
     }
     for index in range(1, 7):
         payload[f"BILL_AMT{index}"] = 50_000 - index * 2_000

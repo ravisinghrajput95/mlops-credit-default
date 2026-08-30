@@ -103,10 +103,7 @@ class GCSParquetSink(PredictionSink):
 
         frame = pd.json_normalize(records)
         stamp = dt.datetime.now(dt.UTC)
-        path = (
-            f"{self.prefix}/date={stamp:%Y-%m-%d}/"
-            f"{stamp:%H%M%S}-{uuid.uuid4().hex[:8]}.parquet"
-        )
+        path = f"{self.prefix}/date={stamp:%Y-%m-%d}/{stamp:%H%M%S}-{uuid.uuid4().hex[:8]}.parquet"
         frame.to_parquet(path, index=False)
 
 
