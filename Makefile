@@ -9,7 +9,7 @@ TF := terraform -chdir=infra/gcp
         ingest split train evaluate promote pipeline \
         serve drift simulate-drift flow-train flow-drift flow-retrain \
         up down logs ps clean \
-        docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost
+        docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost publish-model
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -127,6 +127,9 @@ cloud-up: ## Deploy to GCP (budget alert is created first)
 
 cloud-down: ## TEAR DOWN all cloud resources
 	$(TF) destroy -auto-approve
+
+publish-model: ## Copy the champion model to GCS for Cloud Run
+	$(UV) python scripts/publish_model.py
 
 cloud-cost: ## Show month-to-date spend
 	@gcloud billing accounts list

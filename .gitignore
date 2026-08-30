@@ -34,3 +34,6 @@ service-account*.json
 .DS_Store
 .idea/
 .vscode/
+
+# Terraform state and local vars
+infra/**/terraform.tfvars
