@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data & models — tracked by DVC, not git
+/data/
+/reports/
+/mlruns/
+/mlartifacts/
+*.pkl
+*.joblib
+
+# Secrets & local env
+.env
+*.tfvars
+!example.tfvars
+gcp-key*.json
+service-account*.json
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
