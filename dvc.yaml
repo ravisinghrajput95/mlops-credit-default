@@ -1,0 +1,51 @@
+# Reproducible pipeline DAG. `dvc repro` re-runs only the stages whose declared
+# dependencies changed, so a code edit to train.py does not re-download the data.
+stages:
+  ingest:
+    cmd: python -m credit_default.data.ingest
+    deps:
+      - src/credit_default/data/ingest.py
+    outs:
+      - data/raw/credit_default.parquet
+
+  split:
+    cmd: python -m credit_default.data.split
+    deps:
+      - data/raw/credit_default.parquet
+      - src/credit_default/data/split.py
+      - src/credit_default/data/schema.py
+    outs:
+      - data/processed/reference.parquet
+      - data/processed/current.parquet
+      - data/processed/train.parquet
+      - data/processed/test.parquet
+    metrics:
+      - reports/split_summary.json:
+          cache: false
+
+  train:
+    cmd: python -m credit_default.train
+    deps:
+      - data/processed/train.parquet
+      - data/processed/test.parquet
+      - src/credit_default/train.py
+      - src/credit_default/features/pipeline.py
+    outs:
+      - data/models/model
+    metrics:
+      - reports/metrics.json:
+          cache: false
+    plots:
+      - reports/xgboost/precision_recall.png:
+          cache: false
+      - reports/xgboost/calibration.png:
+          cache: false
+
+  evaluate:
+    cmd: python -m credit_default.evaluate
+    deps:
+      - data/processed/test.parquet
+      - src/credit_default/evaluate.py
+    metrics:
+      - reports/gate.json:
+          cache: false

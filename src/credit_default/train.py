@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -246,6 +247,9 @@ def run(register: bool = True) -> dict[str, dict[str, float]]:
     logger.info("Best candidate: %s (pr_auc=%.4f)", best_name, results[best_name]["pr_auc"])
 
     # Always persist locally so the API can run with no MLflow server reachable.
+    # save_model refuses to write into a non-empty directory, so reruns need a clean slate.
+    if settings.local_model_path.exists():
+        shutil.rmtree(settings.local_model_path)
     mlflow.sklearn.save_model(
         fitted[best_name],
         str(settings.local_model_path),

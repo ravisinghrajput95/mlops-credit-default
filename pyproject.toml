@@ -27,13 +27,17 @@ train = [
     "requests>=2.32",
 ]
 
-# Inference API. This set defines the production image.
+# Inference API. This set defines the production image, so it is kept lean:
+# mlflow-skinny gives the model loader and registry client without the tracking
+# server, Flask and Alembic that full mlflow drags in. That difference is what
+# keeps the image inside Artifact Registry's 0.5 GB always-free tier.
 serve = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "scikit-learn>=1.6",   # needed to unpickle the model pipeline
+    "scikit-learn>=1.6",   # needed to deserialise the model pipeline
     "xgboost>=2.1",
-    "mlflow>=2.19",        # model loading + registry client
+    "mlflow-skinny>=3.0",  # model loading + registry client, no server
+    "skops>=0.11",         # the serialisation format mlflow 3 defaults to
     "prometheus-fastapi-instrumentator>=7.0",
     "psycopg[binary]>=3.2",
     "gcsfs>=2024.10",
@@ -117,6 +121,13 @@ pythonpath = ["src"]
 addopts = "-q --strict-markers"
 markers = [
     "integration: requires the docker-compose stack to be running",
+]
+filterwarnings = [
+    "error::DeprecationWarning:credit_default.*",
+    # Evidently vendors legacy numpy calls we do not control.
+    "ignore::DeprecationWarning:evidently.*",
+    "ignore::DeprecationWarning:numpy.*",
+    "ignore:numpy.core is deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]

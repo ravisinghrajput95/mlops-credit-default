@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     test_fraction: float = 0.2
 
     # --- mlflow ------------------------------------------------------------
-    mlflow_tracking_uri: str = "http://localhost:5000"
+    mlflow_tracking_uri: str = "http://localhost:5001"
     mlflow_experiment: str = "credit-default"
     registered_model_name: str = "credit-default-classifier"
     champion_alias: str = "champion"

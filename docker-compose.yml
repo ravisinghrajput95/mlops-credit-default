@@ -1,0 +1,115 @@
+# The full local stack. One `make up` brings up serving, tracking, storage and
+# observability -- this is the environment the project is actually developed in,
+# and the reason no managed database is needed in the cloud.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mlops
+      POSTGRES_PASSWORD: mlops
+      POSTGRES_DB: mlops
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlops"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow.Dockerfile
+    # Written as a single line deliberately: a YAML folded block (">") keeps the
+    # newlines when continuation lines are indented further, which silently split
+    # this into "mlflow server" with no arguments -- and it then bound to
+    # loopback, unreachable from the other containers.
+    # --allowed-hosts: MLflow 3 rejects Host headers it does not recognise as a
+    # DNS-rebinding defence. Requests from other containers arrive as
+    # "Host: mlflow:5000", which is not in the default allowlist, so the service
+    # name must be listed explicitly or every in-network call fails with a 403.
+    #
+    # --serve-artifacts proxies artifact upload/download through the server. Without
+    # it the server hands clients the raw path "/mlartifacts", which a client on the
+    # host then tries to write to on its own filesystem, and training fails with a
+    # read-only filesystem error.
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--backend-store-uri", "postgresql://mlops:mlops@postgres:5432/mlflow", "--serve-artifacts", "--artifacts-destination", "/mlartifacts", "--allowed-hosts", "mlflow:5000,localhost:5000,localhost:5001,127.0.0.1:5001"]
+    volumes:
+      - mlflow-artifacts:/mlartifacts
+    ports:
+      # Host 5001, not 5000: macOS binds 5000 to the AirPlay Receiver.
+      - "5001:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Must target 0.0.0.0, not localhost -- a server bound only to loopback
+      # would otherwise report healthy while being unreachable from other services.
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://0.0.0.0:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    environment:
+      # The model is pulled from the registry here, unlike the Cloud Run image
+      # which bakes it in -- see infra/gcp for why.
+      MODEL_SOURCE: registry
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PREDICTION_SINK: postgres
+      POSTGRES_DSN: postgresql://mlops:mlops@postgres:5432/mlops
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      # Dashboards are provisioned from files in the repo, never clicked together
+      # by hand -- otherwise they are lost the moment the container is recreated.
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres-data:
+  mlflow-artifacts:
+  prometheus-data:
+  grafana-data:
