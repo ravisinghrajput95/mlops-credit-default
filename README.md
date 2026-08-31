@@ -2,15 +2,8 @@
 
 [![CI](https://github.com/ravisinghrajput95/mlops-credit-default/actions/workflows/ci.yml/badge.svg)](https://github.com/ravisinghrajput95/mlops-credit-default/actions/workflows/ci.yml)
 
-**Live API:** https://credit-default-api-yz5c2xqxtq-uc.a.run.app/docs
-
-```bash
-curl -s https://credit-default-api-yz5c2xqxtq-uc.a.run.app/health
-# {"status":"ok","model_loaded":true}
-```
-
-Running on Cloud Run inside GCP's always-free tier, scaled to zero when idle, so
-the first request after a quiet period takes a few seconds to wake.
+Deployed and verified on GCP, then torn down — see
+[Deploying to GCP](#deploying-to-gcp). `make cloud-up` recreates the whole stack.
 
 A production-shaped machine learning system, not a notebook. It predicts whether
 a credit-card customer will default next month, and wraps that model in the
@@ -280,11 +273,14 @@ surprise bill:
   so a stray region silently turns Rs 0 into a real charge.
 - **Cloud Run scales to zero**, so an idle service costs nothing.
 
-The deployment above is live and costs Rs 0: Cloud Run sits at zero instances
-when idle, the image is ~250 MB against Artifact Registry's 500 MB allowance, and
-the buckets hold well under the 5 GB free tier. The Rs 100 budget alert is the
-tripwire if any of that stops being true. `make cloud-down` removes all 25
-resources whenever you want the guarantee rather than the estimate.
+This has been run for real, not just written. All 25 resources applied to a live
+project, Cloud Run served the champion model loaded from GCS with predictions
+written back as date-partitioned Parquet, the CD workflow deployed a new revision
+authenticating through Workload Identity Federation with no stored key — and then
+everything was destroyed. Total spend: Rs 0.
+
+`terraform destroy` is the intended steady state, which is why the README leans on
+screenshots rather than a permanently running URL.
 
 Three defects in this Terraform only appeared on a real apply, never in
 `validate`:
