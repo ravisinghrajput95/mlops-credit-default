@@ -58,6 +58,11 @@ reference and current distributions side by side.
 
 ![Evidently drift report showing 8 of 23 columns drifted](docs/images/drift-report.jpg)
 
+**Alerting** — four rules provisioned from files, not clicked together. All
+`Provisioned`, all evaluating healthy against live data.
+
+![Grafana alert rules, all four provisioned and in Normal state](docs/images/alert-rules.jpg)
+
 **Validated API** — the request schema is generated from the same contract the
 training data is validated against, so malformed input gets a 422, not a
 prediction.
