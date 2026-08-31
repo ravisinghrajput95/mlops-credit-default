@@ -5,7 +5,7 @@
 
 FROM python:3.12-slim-bookworm AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /usr/local/bin/uv
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -15,13 +15,18 @@ WORKDIR /app
 
 # Dependencies are installed from the lockfile in their own layer so that editing
 # application code does not invalidate the (slow) dependency install.
+#
+# --no-dev matters: `uv sync` installs the default dependency-group unless told
+# otherwise, which put mypy, pytest, ruff and pre-commit in the runtime image.
+# The uv version must also stay in step with the one that wrote uv.lock, since an
+# older uv does not understand a newer lockfile revision.
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --extra serve
+    uv sync --frozen --no-dev --no-install-project --extra serve
 
 COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-editable --extra serve
+    uv sync --frozen --no-dev --no-editable --extra serve
 
 
 

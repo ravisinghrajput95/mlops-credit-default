@@ -247,12 +247,18 @@ Four environment problems cost real time and are worth knowing about:
   service name is added to `--allowed-hosts`.
 - **MLflow needs `--serve-artifacts`**, or it hands clients its own artifact path
   and they try to write it on their own filesystem.
+- **`uv sync` installs the default dependency-group unless you pass `--no-dev`**,
+  which quietly shipped mypy, pytest, ruff and pre-commit inside the production
+  image.
 - **The xgboost PyPI wheel bundles about 290 MB of CUDA libraries** that a CPU
-  container can never use. Declaring `xgboost-cpu` instead took the API image
-  from 627 MB to 294 MB. An earlier version uninstalled the CUDA packages inside
-  the Dockerfile instead, which worked on an ARM Mac and left a 908 MB image on
-  CI's amd64 runner — the CI size gate is what caught it. Declaring the right
-  dependency beats patching the wrong one afterwards.
+  container can never use; `xgboost-cpu` is the same library without them.
+- **Pin `uv` in the Dockerfile to the version that wrote `uv.lock`.** An older uv
+  reading a newer lockfile revision does not fail loudly, it just behaves
+  differently from what you tested locally.
+
+Together those took the API image from 627 MB to 253 MB. The CI size gate is
+what surfaced them: it failed at 908 MB on the amd64 runner while the same
+Dockerfile produced 294 MB on an ARM Mac.
 
 ---
 
