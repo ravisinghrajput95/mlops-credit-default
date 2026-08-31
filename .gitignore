@@ -37,3 +37,7 @@ service-account*.json
 
 # Terraform state and local vars
 infra/**/terraform.tfvars
+
+# Terraform plan files — binary, environment-specific, and can embed variable values
+tfplan
+*.tfplan
