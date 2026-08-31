@@ -2,6 +2,16 @@
 
 [![CI](https://github.com/ravisinghrajput95/mlops-credit-default/actions/workflows/ci.yml/badge.svg)](https://github.com/ravisinghrajput95/mlops-credit-default/actions/workflows/ci.yml)
 
+**Live API:** https://credit-default-api-yz5c2xqxtq-uc.a.run.app/docs
+
+```bash
+curl -s https://credit-default-api-yz5c2xqxtq-uc.a.run.app/health
+# {"status":"ok","model_loaded":true}
+```
+
+Running on Cloud Run inside GCP's always-free tier, scaled to zero when idle, so
+the first request after a quiet period takes a few seconds to wake.
+
 A production-shaped machine learning system, not a notebook. It predicts whether
 a credit-card customer will default next month, and wraps that model in the
 things that actually make ML work in production: a data contract, experiment
@@ -270,8 +280,24 @@ surprise bill:
   so a stray region silently turns Rs 0 into a real charge.
 - **Cloud Run scales to zero**, so an idle service costs nothing.
 
-`terraform destroy` is the intended steady state. Screenshots, not a permanently
-running service, are the durable artifact.
+The deployment above is live and costs Rs 0: Cloud Run sits at zero instances
+when idle, the image is ~250 MB against Artifact Registry's 500 MB allowance, and
+the buckets hold well under the 5 GB free tier. The Rs 100 budget alert is the
+tripwire if any of that stops being true. `make cloud-down` removes all 25
+resources whenever you want the guarantee rather than the estimate.
+
+Three defects in this Terraform only appeared on a real apply, never in
+`validate`:
+
+- `iam.googleapis.com` was missing from the enabled-services list, so service
+  account creation failed with `accessNotConfigured`.
+- The Billing Budgets API rejects user ADC without an attached quota project, so
+  the budget failed to create while everything billable succeeded — the exact
+  inverse of the guarantee above. Fixed with `billing_project` and
+  `user_project_override` on the provider.
+- Nothing actually enforced "budget first". That ordering was left to Terraform's
+  scheduler, which created Cloud Run and both buckets in the same run where the
+  budget errored. The billable resources now `depends_on` the budget explicitly.
 
 ### Notes for anyone reproducing this
 
