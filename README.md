@@ -1,5 +1,7 @@
 # Credit Default Prediction — End-to-End MLOps
 
+[![CI](https://github.com/ravisinghrajput95/mlops-credit-default/actions/workflows/ci.yml/badge.svg)](https://github.com/ravisinghrajput95/mlops-credit-default/actions/workflows/ci.yml)
+
 A production-shaped machine learning system, not a notebook. It predicts whether
 a credit-card customer will default next month, and wraps that model in the
 things that actually make ML work in production: a data contract, experiment
@@ -238,8 +240,21 @@ running service, are the durable artifact.
 
 ### Notes for anyone reproducing this
 
-Four environment problems cost real time and are worth knowing about:
+Environment problems that cost real time here, in case they save you some:
 
+- **`docker image inspect --format {{.Size}}` is not portable.** Docker Desktop's
+  containerd snapshotter reports *compressed* sizes; the classic overlay2 store
+  on a CI runner reports *uncompressed* ones. The same image read as 253 MB
+  locally and 799 MB in CI, which sent the size gate hunting bloat that was not
+  there. The gate now measures compressed bytes, which is also the right number:
+  that is what a registry stores and bills.
+- **`uv sync` installs the default dependency-group unless you pass `--no-dev`**,
+  which quietly shipped mypy, pytest, ruff and pre-commit into the runtime image.
+- **Pin `uv` in the Dockerfile to the version that wrote `uv.lock`.** An older uv
+  reading a newer lockfile revision does not fail loudly; it just resolves
+  differently from what you tested locally.
+- **The xgboost PyPI wheel bundles about 290 MB of CUDA libraries** that a CPU
+  container can never use. `xgboost-cpu` is the same library without them.
 - **macOS binds port 5000** to the AirPlay Receiver, which accepts TCP
   connections and then resets them. MLflow is published on 5001 here.
 - **MLflow 3 rejects unrecognised Host headers** as a DNS-rebinding defence.
@@ -247,18 +262,9 @@ Four environment problems cost real time and are worth knowing about:
   service name is added to `--allowed-hosts`.
 - **MLflow needs `--serve-artifacts`**, or it hands clients its own artifact path
   and they try to write it on their own filesystem.
-- **`uv sync` installs the default dependency-group unless you pass `--no-dev`**,
-  which quietly shipped mypy, pytest, ruff and pre-commit inside the production
-  image.
-- **The xgboost PyPI wheel bundles about 290 MB of CUDA libraries** that a CPU
-  container can never use; `xgboost-cpu` is the same library without them.
-- **Pin `uv` in the Dockerfile to the version that wrote `uv.lock`.** An older uv
-  reading a newer lockfile revision does not fail loudly, it just behaves
-  differently from what you tested locally.
 
-Together those took the API image from 627 MB to 253 MB. The CI size gate is
-what surfaced them: it failed at 908 MB on the amd64 runner while the same
-Dockerfile produced 294 MB on an ARM Mac.
+The API image is 249 MB compressed, against a 400 MB CI budget and Artifact
+Registry's 500 MB free tier.
 
 ---
 
