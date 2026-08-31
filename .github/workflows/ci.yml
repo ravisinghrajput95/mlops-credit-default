@@ -97,16 +97,27 @@ jobs:
           tags: credit-default-api:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # GitHub runners use the containerd image store, where an image built
+          # with provenance/SBOM attestations loads as a manifest list. `docker
+          # image inspect` then sums every manifest in that list, which reported
+          # this image as 908 MB when it is actually 294 MB. The attestations are
+          # not used here, so they are turned off.
+          provenance: false
+          sbom: false
 
       - name: Image must stay inside Artifact Registry's free tier
         # The free tier is 0.5 GB. Failing here is far cheaper than discovering
         # the overage on a bill.
         run: |
-          BYTES=$(docker image inspect credit-default-api:ci --format '{{.Size}}')
+          docker images credit-default-api:ci
+          BYTES=$(docker image inspect credit-default-api:ci --format '{{.Size}}' | head -1)
           MB=$((BYTES / 1024 / 1024))
-          echo "Image size: ${MB} MB"
+          echo "Image size: ${MB} MB (budget 450 MB)"
+          echo "| Image size | ${MB} MB / 450 MB |" >> "$GITHUB_STEP_SUMMARY"
           if [ "$MB" -gt 450 ]; then
             echo "::error::Image is ${MB} MB, over the 450 MB budget."
+            echo "Largest layers:"
+            docker history credit-default-api:ci --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' | head -10
             exit 1
           fi
 
