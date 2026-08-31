@@ -113,3 +113,7 @@ class ModelInfoResponse(BaseModel):
     alias: str
     threshold: float
     features: list[str]
+    # Reported so a caller can see what the model is not allowed to use. In a
+    # regulated setting this is the sort of thing an auditor asks for.
+    excluded_attributes: list[str]
+    audited_attributes: list[str]

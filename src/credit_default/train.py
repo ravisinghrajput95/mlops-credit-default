@@ -5,6 +5,13 @@ logistic-regression baseline and a gradient-boosted challenger. The better model
 by PR-AUC is registered and tagged with the ``challenger`` alias; promotion to
 ``champion`` is a separate, deliberate step (see ``promote.py``).
 
+Protected attributes (see ``config.PROTECTED_ATTRIBUTES``) are excluded from the
+feature set by default, because sex and marital status are prohibited bases for a
+credit decision under ECOA. They remain in the input frame so that fairness can
+still be audited across those groups -- excluding an attribute does not remove
+its influence, since other features correlate with it, and the only way to know
+whether exclusion helped is to measure.
+
 A note on the class imbalance (~22% positive): no resampling or ``class_weight``
 rebalancing is applied. Rebalancing would improve headline recall but distort the
 predicted probabilities, and a credit-risk score is only useful if its
@@ -46,7 +53,16 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
-from credit_default.config import FEATURES, TARGET, Settings, get_settings
+from credit_default.config import (
+    AUDIT_ATTRIBUTES,
+    FEATURES,
+    PROTECTED_ATTRIBUTES,
+    TARGET,
+    Settings,
+    get_settings,
+    model_features,
+)
+from credit_default.fairness import audit, flatten_for_mlflow
 from credit_default.features.pipeline import build_pipeline
 
 logger = logging.getLogger(__name__)
@@ -150,18 +166,33 @@ def train_candidate(
     test: pd.DataFrame,
     settings: Settings,
 ) -> tuple[Pipeline, dict[str, float]]:
-    pipeline = build_pipeline(candidate.estimator)
+    numeric, categorical = model_features(settings.use_protected_attributes)
+    pipeline = build_pipeline(candidate.estimator, numeric, categorical)
 
     with mlflow.start_run(run_name=candidate.name):
         mlflow.log_params(candidate.params)
         mlflow.log_params(
-            {"train_rows": len(train), "test_rows": len(test), "seed": settings.random_seed}
+            {
+                "train_rows": len(train),
+                "test_rows": len(test),
+                "seed": settings.random_seed,
+                "uses_protected_attributes": settings.use_protected_attributes,
+                "excluded_attributes": ",".join(
+                    [] if settings.use_protected_attributes else PROTECTED_ATTRIBUTES
+                ),
+            }
         )
 
         pipeline.fit(train[FEATURES], train[TARGET])
         probabilities = pipeline.predict_proba(test[FEATURES])[:, 1]
         metrics = compute_metrics(test[TARGET], probabilities)
         mlflow.log_metrics(metrics)
+
+        # Audited on every run, whether or not the attributes were used as
+        # features -- a fairness number you only look at once is not monitoring.
+        audits = audit(test, test[TARGET], probabilities, AUDIT_ATTRIBUTES)
+        mlflow.log_metrics(flatten_for_mlflow(audits))
+        mlflow.log_dict({name: a.to_dict() for name, a in audits.items()}, "fairness/audit.json")
 
         for path in _plot_diagnostics(
             test[TARGET], probabilities, settings.reports_dir / candidate.name

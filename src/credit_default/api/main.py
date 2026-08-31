@@ -32,7 +32,12 @@ from credit_default.api.schemas import (
     PredictionResponse,
 )
 from credit_default.api.sinks import NullSink, PredictionSink, build_sink
-from credit_default.config import FEATURES, get_settings
+from credit_default.config import (
+    AUDIT_ATTRIBUTES,
+    FEATURES,
+    PROTECTED_ATTRIBUTES,
+    get_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +116,8 @@ def model_info() -> ModelInfoResponse:
         alias=settings.champion_alias,
         threshold=DECISION_THRESHOLD,
         features=FEATURES,
+        excluded_attributes=([] if settings.use_protected_attributes else PROTECTED_ATTRIBUTES),
+        audited_attributes=AUDIT_ATTRIBUTES,
     )
 
 

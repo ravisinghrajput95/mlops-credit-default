@@ -53,6 +53,31 @@ NUMERIC_FEATURES = [
 
 FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 
+# Attributes the Equal Credit Opportunity Act names as prohibited bases for a
+# credit decision. Sex and marital status may never be used. Age is more nuanced
+# -- ECOA permits it in an "empirically derived, demonstrably and statistically
+# sound" scorecard, subject to conditions -- but clearing that bar is a formal
+# validation exercise, so this project excludes it rather than assume it.
+#
+# EDUCATION is deliberately NOT in this list. It is not a prohibited basis, though
+# it does correlate with socioeconomic status, so it is kept as a feature and
+# audited rather than silently dropped.
+PROTECTED_ATTRIBUTES = ["SEX", "MARRIAGE", "AGE"]
+
+# These stay in the dataset and in the API contract even when excluded from the
+# model. Fairness cannot be measured across a group you did not record, so they
+# are retained for auditing -- the opposite of "fairness through unawareness".
+AUDIT_ATTRIBUTES = ["SEX", "MARRIAGE", "AGE", "EDUCATION"]
+
+
+def model_features(use_protected: bool = False) -> tuple[list[str], list[str]]:
+    """Return (numeric, categorical) columns the estimator is allowed to see."""
+    if use_protected:
+        return list(NUMERIC_FEATURES), list(CATEGORICAL_FEATURES)
+    numeric = [c for c in NUMERIC_FEATURES if c not in PROTECTED_ATTRIBUTES]
+    categorical = [c for c in CATEGORICAL_FEATURES if c not in PROTECTED_ATTRIBUTES]
+    return numeric, categorical
+
 
 class Settings(BaseSettings):
     """Runtime settings, overridable by env var or a local .env file."""
@@ -80,6 +105,15 @@ class Settings(BaseSettings):
     registered_model_name: str = "credit-default-classifier"
     champion_alias: str = "champion"
     challenger_alias: str = "challenger"
+
+    # --- fairness ----------------------------------------------------------
+    # Excluding prohibited bases is the default. The flag exists so the cost of
+    # that choice can be measured rather than asserted -- see scripts/fairness_report.py.
+    use_protected_attributes: bool = False
+    # Maximum acceptable gap in selection rate between demographic groups.
+    # 0.1 follows the "four-fifths rule" convention loosely; a real deployment
+    # would set this with legal and compliance input, not by convention.
+    max_selection_rate_gap: float = 0.1
 
     # --- model quality gate ------------------------------------------------
     # The class balance is ~22% positive, so PR-AUC is the primary metric;

@@ -7,7 +7,7 @@ TF := terraform -chdir=infra/gcp
 
 .PHONY: help setup lint format typecheck test test-cov check \
         ingest split train evaluate promote pipeline \
-        serve drift simulate-drift flow-train flow-drift flow-retrain \
+        serve drift fairness simulate-drift flow-train flow-drift flow-retrain \
         up down logs ps clean \
         docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost publish-model
 
@@ -60,6 +60,9 @@ pipeline: ## Run the full DVC pipeline (only re-runs what changed)
 	$(UV) dvc repro
 
 # ------------------------------------------------------------ monitoring ---
+
+fairness: ## Measure what excluding protected attributes costs
+	$(UV) python scripts/fairness_report.py
 
 drift: ## Compare the current cohort against reference
 	$(UV) python -m credit_default.monitoring.drift

@@ -122,9 +122,12 @@ credentials needed.
 
 | Model | PR-AUC | ROC-AUC | Brier |
 | --- | --- | --- | --- |
-| Logistic regression | 0.547 | 0.771 | 0.135 |
+| Logistic regression | 0.547 | 0.773 | 0.136 |
 | **XGBoost** (champion) | **0.563** | **0.787** | **0.133** |
 | No-skill baseline | 0.221 | 0.500 | — |
+
+Trained on 20 features, not the dataset's 23 — see
+[Protected attributes](#protected-attributes-and-what-excluding-them-actually-costs).
 
 ROC-AUC of 0.787 is in line with published results on this dataset. A model that
 scored much higher would be a sign of leakage, not skill.
@@ -165,6 +168,66 @@ Detected drift is frequently a broken upstream feed rather than a real populatio
 shift, and an unattended pipeline that retrains on a broken feed will faithfully
 learn the bug and ship it. The automation does everything up to the decision,
 then stops and tells a human what it found.
+
+### Protected attributes, and what excluding them actually costs
+
+The UCI dataset ships `SEX`, `MARRIAGE` and `AGE` as features. Under the Equal
+Credit Opportunity Act these are prohibited bases for a credit decision: sex and
+marital status may never be used, and age only inside a formally validated
+scorecard. A model that uses them is not a modelling choice, it is a compliance
+failure. **All three are excluded from the feature set.**
+
+They are *not* deleted from the data. You cannot audit a group you did not
+record, so they stay in the dataset and in the API contract and are used purely
+for measurement. `/model-info` reports exactly which attributes the model is
+forbidden from using.
+
+`scripts/fairness_report.py` trains both variants and compares them, so the
+tradeoff is measured rather than asserted:
+
+| | Features | PR-AUC | ROC-AUC |
+| --- | --- | --- | --- |
+| With protected attributes | 23 | 0.5633 | 0.7868 |
+| Without (shipped) | 20 | 0.5626 | 0.7870 |
+| **Cost of exclusion** | | **−0.0007** | **+0.0002** |
+
+**Compliance costs essentially nothing here.** PR-AUC drops by 0.0007 and ROC-AUC
+marginally improves — well inside run-to-run noise. When the legally required
+choice is also free, there is nothing to trade off.
+
+The fairness picture is more interesting, and two results are worth stating
+plainly because they cut against the easy story:
+
+| Attribute | Selection gap (with → without) | Base-rate gap in the data |
+| --- | --- | --- |
+| SEX | 0.0337 → **0.0216** | 0.0214 |
+| AGE | 0.0918 → **0.0487** | 0.0909 |
+| MARRIAGE | 0.0413 → **0.0475** | 0.0418 |
+| EDUCATION *(kept)* | 0.1769 → 0.1664 | 0.1882 |
+
+1. **Excluding an attribute does not remove its influence.** The gaps shrink but
+   never vanish, because other features correlate with the protected ones and the
+   model reconstructs them. For `SEX` the remaining gap (0.0216) is now almost
+   exactly the real difference in the data (0.0214) — the model stopped
+   amplifying it, which is the best available outcome, not a clean zero.
+   "Fairness through unawareness" is not a solution, and this is the measurement
+   that shows it.
+2. **`MARRIAGE` got slightly worse**, on both selection rate and equal
+   opportunity. Removing a protected attribute can degrade fairness on that
+   attribute, because the model loses the ability to correct for it directly.
+   That is a real result and it is reported rather than buried.
+3. **The largest disparity is in `EDUCATION`, which is not a protected class at
+   all** — a selection gap of 0.166 and an equal-opportunity gap of 0.46, far
+   worse than anything ECOA covers. Legal compliance and fairness are not the
+   same target, and optimising only for the first would miss this entirely.
+
+Every run logs these gaps to MLflow (`fairness_*` metrics), so fairness is
+tracked over time like any other metric rather than checked once and forgotten.
+
+Two mutually incompatible definitions are reported side by side — demographic
+parity and equal opportunity — because they cannot both hold unless base rates
+are equal. Picking between them is a policy decision for legal and compliance,
+not something this repository should quietly settle.
 
 ### Drift monitoring instead of accuracy monitoring
 
@@ -224,6 +287,7 @@ src/credit_default/
   train.py               candidates, MLflow logging, registry
   evaluate.py            quality gate (exits non-zero to fail a build)
   promote.py             gated champion promotion
+  fairness.py            group fairness audit (ECOA-protected attributes)
   monitoring/drift.py    Evidently drift check
   api/                   FastAPI app, model loading, prediction sinks
 flows/pipeline.py        Prefect: training, drift, retrain-on-drift
