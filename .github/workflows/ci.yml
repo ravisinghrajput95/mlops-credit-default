@@ -106,23 +106,23 @@ jobs:
           sbom: false
 
       - name: Image must stay inside Artifact Registry's free tier
-        # The free tier is 0.5 GB. Failing here is far cheaper than discovering
-        # the overage on a bill.
+        # Measured compressed, because that is what a registry stores and bills.
+        #
+        # `docker image inspect --format {{.Size}}` is NOT portable for this:
+        # Docker Desktop's containerd snapshotter reports compressed sizes while
+        # the classic overlay2 store on CI reports uncompressed ones. The same
+        # image read as 253 MB locally and 799 MB here, which sent an earlier
+        # version of this gate chasing bloat that did not exist.
         run: |
-          docker images credit-default-api:ci
-          echo "--- largest packages in the runtime venv ---"
-          docker run --rm --entrypoint sh credit-default-api:ci -c \
-            "du -sm /app/.venv/lib/python3.12/site-packages/* 2>/dev/null | sort -rn | head -15"
-          echo "--- venv total ---"
-          docker run --rm --entrypoint sh credit-default-api:ci -c "du -sm /app/.venv"
-          BYTES=$(docker image inspect credit-default-api:ci --format '{{.Size}}' | head -1)
+          BYTES=$(docker save credit-default-api:ci | gzip -6 | wc -c)
           MB=$((BYTES / 1024 / 1024))
-          echo "Image size: ${MB} MB (budget 450 MB)"
-          echo "| Image size | ${MB} MB / 450 MB |" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$MB" -gt 450 ]; then
-            echo "::error::Image is ${MB} MB, over the 450 MB budget."
-            echo "Largest layers:"
-            docker history credit-default-api:ci --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' | head -10
+          echo "Compressed image size: ${MB} MB (budget 400 MB, free tier 500 MB)"
+          echo "| Compressed image | ${MB} MB / 400 MB |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MB" -gt 400 ]; then
+            echo "::error::Image is ${MB} MB compressed, over the 400 MB budget."
+            echo "Largest packages in the runtime venv:"
+            docker run --rm --entrypoint sh credit-default-api:ci -c \
+              "du -sm /app/.venv/lib/python3.12/site-packages/* 2>/dev/null | sort -rn | head -15"
             exit 1
           fi
 
