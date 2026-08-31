@@ -19,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import mlflow
+import mlflow.models
 import mlflow.sklearn
 
 from credit_default.config import get_settings
@@ -35,12 +36,20 @@ def publish(destination: str, alias: str | None = None) -> str:
     logger.info("Loading %s", uri)
     model = mlflow.sklearn.load_model(uri)
 
+    # Re-saving a model drops everything not passed explicitly, so the metadata is
+    # carried across by hand. The decision threshold lives here, and losing it
+    # silently reverts serving to the 0.5 default -- which is exactly what
+    # happened the first time this script ran against Cloud Run.
+    metadata = mlflow.models.Model.load(uri).metadata or {}
+    logger.info("Carrying metadata across: %s", metadata or "(none)")
+
     with tempfile.TemporaryDirectory() as tmp:
         staged = Path(tmp) / "model"
         mlflow.sklearn.save_model(
             model,
             str(staged),
             skops_trusted_types=["xgboost.core.Booster", "xgboost.sklearn.XGBClassifier"],
+            metadata=metadata,
         )
 
         if destination.startswith("gs://"):
