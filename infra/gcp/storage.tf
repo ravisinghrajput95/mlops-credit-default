@@ -20,7 +20,7 @@ resource "google_storage_bucket" "artifacts" {
     }
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [google_project_service.required, google_billing_budget.guardrail]
 }
 
 resource "google_storage_bucket" "predictions" {
@@ -39,7 +39,7 @@ resource "google_storage_bucket" "predictions" {
     }
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [google_project_service.required, google_billing_budget.guardrail]
 }
 
 resource "google_artifact_registry_repository" "images" {
@@ -66,5 +66,5 @@ resource "google_artifact_registry_repository" "images" {
     }
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [google_project_service.required, google_billing_budget.guardrail]
 }

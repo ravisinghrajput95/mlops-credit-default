@@ -29,6 +29,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 resource "google_service_account" "deployer" {
+  depends_on   = [google_project_service.required]
   account_id   = "github-deployer"
   display_name = "GitHub Actions deployer"
 }
@@ -54,6 +55,7 @@ resource "google_project_iam_member" "deployer_roles" {
 }
 
 resource "google_service_account" "runtime" {
+  depends_on   = [google_project_service.required]
   account_id   = "credit-default-api"
   display_name = "Cloud Run runtime identity"
 }

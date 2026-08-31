@@ -66,7 +66,7 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [google_project_service.required, google_billing_budget.guardrail]
 }
 
 # Public read access. This is a portfolio demo with no sensitive data; a real
