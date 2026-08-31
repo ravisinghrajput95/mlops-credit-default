@@ -64,6 +64,7 @@ from credit_default.config import (
 )
 from credit_default.fairness import audit, flatten_for_mlflow
 from credit_default.features.pipeline import build_pipeline
+from credit_default.threshold import tune_on_training_data
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +112,15 @@ def candidates(seed: int) -> list[Candidate]:
     ]
 
 
-def compute_metrics(y_true: pd.Series, probabilities: Any) -> dict[str, float]:
-    """PR-AUC leads: with a 22% positive rate, accuracy is not informative."""
-    predictions = (probabilities >= 0.5).astype(int)
+def compute_metrics(
+    y_true: pd.Series, probabilities: Any, threshold: float = 0.5
+) -> dict[str, float]:
+    """PR-AUC leads: with a 22% positive rate, accuracy is not informative.
+
+    Threshold-free metrics (PR-AUC, ROC-AUC, Brier) judge the model; the
+    confusion counts and F1 depend on where the cutoff is placed.
+    """
+    predictions = (probabilities >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, predictions).ravel()
     return {
         "pr_auc": float(average_precision_score(y_true, probabilities)),
@@ -183,14 +190,33 @@ def train_candidate(
             }
         )
 
+        # Tuned before the final fit, on out-of-fold training predictions, so the
+        # cutoff never sees the test set it is later judged on.
+        choice = tune_on_training_data(
+            pipeline,
+            train,
+            FEATURES,
+            TARGET,
+            settings.cost_false_negative,
+            settings.cost_false_positive,
+            settings.random_seed,
+        )
+        mlflow.log_metrics(choice.to_dict())
+        mlflow.log_params(
+            {
+                "cost_false_negative": settings.cost_false_negative,
+                "cost_false_positive": settings.cost_false_positive,
+            }
+        )
+
         pipeline.fit(train[FEATURES], train[TARGET])
         probabilities = pipeline.predict_proba(test[FEATURES])[:, 1]
-        metrics = compute_metrics(test[TARGET], probabilities)
+        metrics = compute_metrics(test[TARGET], probabilities, choice.threshold)
         mlflow.log_metrics(metrics)
 
         # Audited on every run, whether or not the attributes were used as
         # features -- a fairness number you only look at once is not monitoring.
-        audits = audit(test, test[TARGET], probabilities, AUDIT_ATTRIBUTES)
+        audits = audit(test, test[TARGET], probabilities, AUDIT_ATTRIBUTES, choice.threshold)
         mlflow.log_metrics(flatten_for_mlflow(audits))
         mlflow.log_dict({name: a.to_dict() for name, a in audits.items()}, "fairness/audit.json")
 
@@ -208,6 +234,9 @@ def train_candidate(
             signature=signature,
             input_example=test[FEATURES].head(5),
             skops_trusted_types=SKOPS_TRUSTED_TYPES,
+            # Travels with the artifact so the serving layer uses the cutoff this
+            # model was tuned for, rather than a constant compiled into the API.
+            metadata={"decision_threshold": choice.threshold},
         )
         mlflow.set_tag("candidate", candidate.name)
 
@@ -218,6 +247,7 @@ def train_candidate(
             metrics["roc_auc"],
             metrics["brier_score"],
         )
+    metrics["decision_threshold"] = choice.threshold
     return pipeline, metrics
 
 
@@ -228,7 +258,12 @@ def register_best(
     test: pd.DataFrame,
     settings: Settings,
 ) -> None:
-    """Register the winner and mark it ``challenger`` -- never ``champion``."""
+    """Register the winner and mark it ``challenger`` -- never ``champion``.
+
+    The tuned threshold is attached here as well as on the candidate run. Every
+    persisted copy of a model must carry its own cutoff; a copy without one
+    silently falls back to 0.5, which is the bug this replaced.
+    """
     signature = infer_signature(test[FEATURES], best_pipeline.predict_proba(test[FEATURES])[:, 1])
     with mlflow.start_run(run_name=f"register-{best_name}"):
         mlflow.log_metrics(best_metrics)
@@ -240,6 +275,7 @@ def register_best(
             input_example=test[FEATURES].head(5),
             registered_model_name=settings.registered_model_name,
             skops_trusted_types=SKOPS_TRUSTED_TYPES,
+            metadata={"decision_threshold": best_metrics["decision_threshold"]},
         )
 
     client = MlflowClient()
@@ -289,6 +325,7 @@ def run(register: bool = True) -> dict[str, dict[str, float]]:
         fitted[best_name],
         str(settings.local_model_path),
         skops_trusted_types=SKOPS_TRUSTED_TYPES,
+        metadata={"decision_threshold": results[best_name]["decision_threshold"]},
     )
 
     settings.metrics_path.write_text(

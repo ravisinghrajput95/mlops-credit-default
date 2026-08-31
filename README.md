@@ -229,6 +229,42 @@ parity and equal opportunity — because they cannot both hold unless base rates
 are equal. Picking between them is a policy decision for legal and compliance,
 not something this repository should quietly settle.
 
+### The decision threshold comes from cost, not from 0.5
+
+A classifier outputs a probability; turning that into approve/decline needs a
+cutoff. **0.5 is not a neutral default** — it is optimal only when a false
+positive and a false negative cost exactly the same, which in lending they do not.
+Approving someone who defaults loses much of the balance; declining someone who
+would have repaid loses one account's margin.
+
+The cutoff is chosen by minimising expected cost, using a 5:1 ratio between the
+two error types. For a calibrated model the optimum has a closed form,
+`cost_fp / (cost_fn + cost_fp)`, which is what the tests assert against rather
+than checking the search against another run of itself.
+
+| | Threshold | Expected cost | Declined |
+| --- | --- | --- | --- |
+| Convention | 0.50 | 0.741 | 17% |
+| **Cost-optimal** | **0.18** | **0.556** | **39%** |
+
+That is a 25% reduction in expected cost — and a decline rate that jumps from 17%
+to 39%. **A lender rejecting 39% of applicants is probably commercially
+unacceptable**, which is the honest reading of this result: it says the 5:1 ratio
+is a placeholder, not that the business should decline four applicants in ten.
+The ratio is exposed as configuration because it is a business input to be
+derived from exposure at default, recovery rate and per-account margin — not a
+modelling constant to be guessed once.
+
+Two implementation details that matter more than they look:
+
+- The threshold is tuned on **out-of-fold predictions over the training set**,
+  never on test. Tuning on test would make the reported test metrics optimistic,
+  since the cutoff would have been fitted to the data used to judge it.
+- It travels **inside the model artifact's metadata**, so serving uses the cutoff
+  the model was tuned for. A constant in the API would silently drift away from
+  the model it serves — which it did, until every persistence path was fixed to
+  carry it.
+
 ### Drift monitoring instead of accuracy monitoring
 
 Whether a customer actually defaults is known months after the prediction is
@@ -288,6 +324,7 @@ src/credit_default/
   evaluate.py            quality gate (exits non-zero to fail a build)
   promote.py             gated champion promotion
   fairness.py            group fairness audit (ECOA-protected attributes)
+  threshold.py           cost-optimal decision cutoff
   monitoring/drift.py    Evidently drift check
   api/                   FastAPI app, model loading, prediction sinks
 flows/pipeline.py        Prefect: training, drift, retrain-on-drift

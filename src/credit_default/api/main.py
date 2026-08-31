@@ -41,8 +41,6 @@ from credit_default.config import (
 
 logger = logging.getLogger(__name__)
 
-DECISION_THRESHOLD = 0.5
-
 PREDICTION_PROBABILITY = Histogram(
     "prediction_probability",
     "Distribution of predicted default probabilities",
@@ -114,7 +112,7 @@ def model_info() -> ModelInfoResponse:
         model_version=state.model.version,
         registered_model_name=settings.registered_model_name,
         alias=settings.champion_alias,
-        threshold=DECISION_THRESHOLD,
+        threshold=state.model.threshold,
         features=FEATURES,
         excluded_attributes=([] if settings.use_protected_attributes else PROTECTED_ATTRIBUTES),
         audited_attributes=AUDIT_ATTRIBUTES,
@@ -130,7 +128,7 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
     frame = pd.DataFrame(payload)
 
     try:
-        probabilities, labels = state.model.predict(frame, DECISION_THRESHOLD)
+        probabilities, labels = state.model.predict(frame)
     except Exception as exc:
         logger.exception("Inference failed")
         raise HTTPException(status_code=500, detail="Inference failed.") from exc
@@ -160,7 +158,7 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
             for p, v in zip(probabilities, labels, strict=True)
         ],
         model_version=state.model.version,
-        threshold=DECISION_THRESHOLD,
+        threshold=state.model.threshold,
     )
 
 

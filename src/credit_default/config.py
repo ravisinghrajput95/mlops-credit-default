@@ -115,6 +115,21 @@ class Settings(BaseSettings):
     # would set this with legal and compliance input, not by convention.
     max_selection_rate_gap: float = 0.1
 
+    # --- decision threshold ------------------------------------------------
+    # Relative costs of the two error types. Only the ratio matters, so these are
+    # unitless: approving someone who then defaults is treated as five times more
+    # costly than declining someone who would have repaid.
+    #
+    # 5:1 is a placeholder chosen to be defensible, not a researched figure. A
+    # real lender would derive it from average exposure at default, recovery rate
+    # and per-account margin, and would revisit it as those move. It is exposed
+    # as configuration precisely because it is a business input, not a modelling
+    # constant.
+    cost_false_negative: float = 5.0
+    cost_false_positive: float = 1.0
+    # Fallback when a model carries no tuned threshold in its metadata.
+    default_decision_threshold: float = 0.5
+
     # --- model quality gate ------------------------------------------------
     # The class balance is ~22% positive, so PR-AUC is the primary metric;
     # accuracy would be ~78% for a model that never predicts default.

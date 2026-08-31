@@ -27,19 +27,46 @@ from credit_default.data.schema import clean
 logger = logging.getLogger(__name__)
 
 
+def _threshold_from(path_or_uri: str, settings: Settings) -> float:
+    """Read the tuned cutoff out of the saved MLflow model's metadata."""
+    import mlflow.models
+
+    try:
+        info = mlflow.models.Model.load(path_or_uri)
+        value = (info.metadata or {}).get("decision_threshold")
+        if value is not None:
+            return float(value)
+    except Exception:
+        logger.warning("Could not read decision_threshold from %s", path_or_uri)
+    logger.info("Falling back to the default threshold %.2f", settings.default_decision_threshold)
+    return settings.default_decision_threshold
+
+
 class ModelHandle:
     """A loaded model plus the metadata the API reports about it."""
 
-    def __init__(self, model: Any, version: str | None, source: str) -> None:
+    def __init__(
+        self,
+        model: Any,
+        version: str | None,
+        source: str,
+        threshold: float = 0.5,
+    ) -> None:
         self.model = model
         self.version = version
         self.source = source
+        # The cutoff this model was tuned for, read from its own metadata. A
+        # constant in the API would silently drift away from the model it serves.
+        self.threshold = threshold
 
-    def predict(self, frame: pd.DataFrame, threshold: float) -> tuple[list[float], list[int]]:
+    def predict(
+        self, frame: pd.DataFrame, threshold: float | None = None
+    ) -> tuple[list[float], list[int]]:
         """Score a frame, applying the same cleaning used during training."""
+        cutoff = self.threshold if threshold is None else threshold
         prepared = clean(frame)[FEATURES]
         probabilities = self.model.predict_proba(prepared)[:, 1]
-        labels = (probabilities >= threshold).astype(int)
+        labels = (probabilities >= cutoff).astype(int)
         return [float(p) for p in probabilities], [int(v) for v in labels]
 
 
@@ -64,14 +91,19 @@ def load_model(settings: Settings) -> ModelHandle:
             logger.warning("Loaded the champion model but could not resolve its version.")
 
         logger.info("Loaded %s (version %s)", uri, version)
-        return ModelHandle(model, version, "registry")
+        return ModelHandle(model, version, "registry", _threshold_from(uri, settings))
 
     if settings.model_source == "gcs":
         if not settings.gcs_model_uri:
             raise ValueError("GCS_MODEL_URI must be set when MODEL_SOURCE=gcs")
         model = mlflow.sklearn.load_model(settings.gcs_model_uri)
         logger.info("Loaded model from %s", settings.gcs_model_uri)
-        return ModelHandle(model, settings.gcs_model_uri.rstrip("/").split("/")[-1], "gcs")
+        return ModelHandle(
+            model,
+            settings.gcs_model_uri.rstrip("/").split("/")[-1],
+            "gcs",
+            _threshold_from(settings.gcs_model_uri, settings),
+        )
 
     path = settings.local_model_path
     if not path.exists():
@@ -80,4 +112,4 @@ def load_model(settings: Settings) -> ModelHandle:
         )
     model = mlflow.sklearn.load_model(str(path))
     logger.info("Loaded local model from %s", path)
-    return ModelHandle(model, "local", "local")
+    return ModelHandle(model, "local", "local", _threshold_from(str(path), settings))

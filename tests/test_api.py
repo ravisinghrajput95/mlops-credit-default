@@ -120,3 +120,33 @@ def test_metrics_endpoint_exposes_the_prediction_histogram(client, application):
     client.post("/predict", json={"applications": [application]})
     body = client.get("/metrics").text
     assert "prediction_probability" in body
+
+
+@pytest.mark.parametrize("attribute", ["SEX", "MARRIAGE", "AGE"])
+def test_prediction_is_invariant_to_protected_attributes(client, application, attribute):
+    """Counterfactual test: change only a protected attribute, get the same score.
+
+    This is the end-to-end proof that exclusion actually holds. Unit tests confirm
+    the column never reaches the estimator; this confirms the whole serving path
+    behaves accordingly, which is what an auditor would actually ask to see.
+    """
+    variants = {"SEX": [1, 2], "MARRIAGE": [1, 2, 3], "AGE": [25, 45, 65]}[attribute]
+
+    probabilities = []
+    for value in variants:
+        body = {"applications": [{**application, attribute: value}]}
+        response = client.post("/predict", json=body)
+        assert response.status_code == 200
+        probabilities.append(response.json()["predictions"][0]["probability"])
+
+    assert (
+        len(set(probabilities)) == 1
+    ), f"changing {attribute} changed the prediction: {probabilities}"
+
+
+def test_model_info_declares_what_the_model_may_not_use(client):
+    body = client.get("/model-info").json()
+    assert set(body["excluded_attributes"]) == {"SEX", "MARRIAGE", "AGE"}
+    # The attributes stay in the request contract so they can still be audited.
+    for attribute in body["excluded_attributes"]:
+        assert attribute in body["features"]
