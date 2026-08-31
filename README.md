@@ -248,8 +248,11 @@ Four environment problems cost real time and are worth knowing about:
 - **MLflow needs `--serve-artifacts`**, or it hands clients its own artifact path
   and they try to write it on their own filesystem.
 - **The xgboost PyPI wheel bundles about 290 MB of CUDA libraries** that a CPU
-  container can never use. Swapping in `xgboost-cpu` and purging the orphaned
-  `nvidia` packages took the API image from 627 MB to 289 MB.
+  container can never use. Declaring `xgboost-cpu` instead took the API image
+  from 627 MB to 294 MB. An earlier version uninstalled the CUDA packages inside
+  the Dockerfile instead, which worked on an ARM Mac and left a 908 MB image on
+  CI's amd64 runner — the CI size gate is what caught it. Declaring the right
+  dependency beats patching the wrong one afterwards.
 
 ---
 

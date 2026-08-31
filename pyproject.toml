@@ -20,7 +20,9 @@ dependencies = [
 # Model training. Not installed into the API image.
 train = [
     "scikit-learn>=1.6",
-    "xgboost>=2.1",
+    # xgboost-cpu, not xgboost: the default wheel bundles ~290 MB of CUDA
+    # libraries that nothing here uses. Training on this dataset is CPU-bound.
+    "xgboost-cpu>=2.1",
     "mlflow>=2.19",
     "matplotlib>=3.9",
     "xlrd>=2.0",           # UCI ships the dataset as legacy .xls
@@ -35,7 +37,7 @@ serve = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "scikit-learn>=1.6",   # needed to deserialise the model pipeline
-    "xgboost>=2.1",
+    "xgboost-cpu>=2.1",    # see the train extra: no CUDA payload
     "mlflow-skinny>=3.0",  # model loading + registry client, no server
     "skops>=0.11",         # the serialisation format mlflow 3 defaults to
     "prometheus-fastapi-instrumentator>=7.0",
