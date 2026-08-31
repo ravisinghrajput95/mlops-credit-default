@@ -1,23 +1,44 @@
 {
   "uid": "credit-default-api",
   "title": "Credit Default API",
-  "tags": ["mlops", "credit-default"],
+  "tags": [
+    "mlops",
+    "credit-default"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,
   "refresh": "10s",
-  "time": { "from": "now-30m", "to": "now" },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
   "panels": [
     {
       "type": "row",
       "title": "Service health (RED)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
     },
     {
       "type": "stat",
       "title": "Request rate",
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 } },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2
+        }
+      },
       "targets": [
         {
           "expr": "sum(rate(http_requests_total{handler=\"/predict\"}[1m]))",
@@ -29,7 +50,12 @@
     {
       "type": "stat",
       "title": "Error rate (5xx)",
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
@@ -37,24 +63,42 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 0.01 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
             ]
-          }
+          },
+          "noValue": "0"
         }
       },
       "targets": [
         {
-          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total[5m])), 1e-9)",
+          "expr": "(sum(rate(http_requests_total{status=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(http_requests_total[5m])), 1e-9)",
           "refId": "A"
         }
-      ]
+      ],
+      "description": "Zero is the expected value; 'or vector(0)' keeps it from rendering as No data when no 5xx series exists."
     },
     {
       "type": "stat",
       "title": "p95 latency",
-      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "s", "decimals": 3 } },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{handler=\"/predict\"}[5m])))",
@@ -65,22 +109,53 @@
     {
       "type": "stat",
       "title": "Predictions served",
-      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "targets": [{ "expr": "prediction_probability_count", "refId": "A" }]
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "prediction_probability_count",
+          "refId": "A"
+        }
+      ]
     },
     {
       "type": "row",
       "title": "Model behaviour",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      }
     },
     {
       "type": "timeseries",
       "title": "Mean predicted default probability",
       "description": "Ground-truth labels arrive months late, so a shift in the score distribution is the earliest available drift signal.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
       "fieldConfig": {
-        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "fillOpacity": 10 } }
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "fillOpacity": 10
+          }
+        }
       },
       "targets": [
         {
@@ -94,8 +169,19 @@
       "type": "timeseries",
       "title": "Predicted-probability quantiles",
       "description": "The whole distribution moving, not just its mean, is what drift looks like.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      },
       "targets": [
         {
           "expr": "histogram_quantile(0.5, sum by (le) (rate(prediction_probability_bucket[5m])))",
@@ -118,11 +204,23 @@
       "type": "timeseries",
       "title": "Share of applications flagged as likely to default",
       "description": "A sudden jump means either the population changed or the model did.",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "noValue": "0"
+        }
+      },
       "targets": [
         {
-          "expr": "1 - (rate(prediction_probability_bucket{le=\"0.5\"}[5m]) / clamp_min(rate(prediction_probability_count[5m]), 1e-9))",
+          "expr": "1 - (sum(rate(prediction_probability_bucket{le=\"0.5\"}[5m])) / clamp_min(sum(rate(prediction_probability_count[5m])), 1e-9))",
           "legendFormat": "flagged share",
           "refId": "A"
         }

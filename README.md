@@ -28,6 +28,41 @@ That brings up the whole stack. `make help` lists every workflow.
 
 ---
 
+## What it looks like
+
+**Experiment tracking** — both candidates logged with the metrics that matter.
+XGBoost (PR-AUC 0.563) beats the logistic-regression baseline (0.547).
+
+![MLflow runs comparing XGBoost and logistic regression](docs/images/mlflow-runs.jpg)
+
+**Model registry** — version 1 serves traffic as `@champion` while version 2 sits
+as `@challenger`. Nothing promotes automatically; that gap is the point.
+
+![MLflow model registry showing champion and challenger aliases](docs/images/mlflow-registry.jpg)
+
+**Live serving dashboard** — RED metrics plus the predicted-probability
+distribution, provisioned from JSON in this repo rather than clicked together.
+
+![Grafana dashboard showing request rate, error rate, latency and prediction scores](docs/images/grafana-dashboard.jpg)
+
+**Score distribution over time** — the earliest drift signal available when
+ground-truth labels are months away.
+
+![Grafana panels showing predicted probability quantiles and flagged share](docs/images/grafana-prediction-drift.jpg)
+
+**Drift detection** — 8 of 23 columns flagged after the synthetic shift, with
+reference and current distributions side by side.
+
+![Evidently drift report showing 8 of 23 columns drifted](docs/images/drift-report.jpg)
+
+**Validated API** — the request schema is generated from the same contract the
+training data is validated against, so malformed input gets a 422, not a
+prediction.
+
+![Swagger UI showing the /predict endpoint and its request schema](docs/images/api-docs.jpg)
+
+---
+
 ## Architecture
 
 ```mermaid

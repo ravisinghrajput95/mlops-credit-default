@@ -120,7 +120,11 @@ def run(source: str = "cohort", settings: Settings | None = None) -> dict[str, A
     current = load_current(settings, source)
     logger.info("Comparing %d reference rows against %d current rows", len(reference), len(current))
 
-    report = Report(metrics=[DataDriftPreset()])
+    # Pass our own threshold into the preset so the rendered HTML and this
+    # module's pass/fail verdict agree. Left at Evidently's default of 0.5, the
+    # report header would read "Dataset Drift is NOT detected" on the very run
+    # that fails the gate at 0.3, which is a confusing thing to hand a reviewer.
+    report = Report(metrics=[DataDriftPreset(drift_share=settings.max_drifted_share)])
     result = report.run(
         current_data=_as_dataset(current),
         reference_data=_as_dataset(reference),
