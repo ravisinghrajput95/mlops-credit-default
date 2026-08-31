@@ -110,6 +110,11 @@ jobs:
         # the overage on a bill.
         run: |
           docker images credit-default-api:ci
+          echo "--- largest packages in the runtime venv ---"
+          docker run --rm --entrypoint sh credit-default-api:ci -c \
+            "du -sm /app/.venv/lib/python3.12/site-packages/* 2>/dev/null | sort -rn | head -15"
+          echo "--- venv total ---"
+          docker run --rm --entrypoint sh credit-default-api:ci -c "du -sm /app/.venv"
           BYTES=$(docker image inspect credit-default-api:ci --format '{{.Size}}' | head -1)
           MB=$((BYTES / 1024 / 1024))
           echo "Image size: ${MB} MB (budget 450 MB)"
