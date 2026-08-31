@@ -1,0 +1,159 @@
+apiVersion: 1
+
+# Alert rules as code. A dashboard nobody is watching is not monitoring; these
+# are what actually notice at 3am.
+#
+# Every rule sets noDataState explicitly. The default (NoData -> alerting) turns a
+# scrape gap into a page, which trains people to ignore the alerts.
+groups:
+  - orgId: 1
+    name: credit-default-serving
+    folder: credit-default
+    interval: 1m
+    rules:
+      - uid: cd-error-rate
+        title: API error rate above 1%
+        condition: threshold
+        for: 5m
+        annotations:
+          summary: The prediction API is returning 5xx responses.
+          description: >-
+            More than 1% of requests failed over the last 5 minutes. Check the API
+            logs first; the usual causes are the model failing to load at startup
+            or the prediction sink being unreachable.
+        labels:
+          severity: critical
+        # A service serving no traffic has no error rate; that is the "no traffic"
+        # rule's job, not this one.
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: query
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: >-
+                (sum(rate(http_requests_total{status=~"5.."}[5m])) or vector(0))
+                / clamp_min(sum(rate(http_requests_total[5m])), 1e-9)
+              instant: true
+              refId: query
+          - refId: threshold
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: query
+              conditions:
+                - evaluator: {type: gt, params: [0.01]}
+              refId: threshold
+
+      - uid: cd-latency
+        title: p95 prediction latency above 1s
+        condition: threshold
+        for: 5m
+        annotations:
+          summary: Predictions are slow.
+          description: >-
+            95th percentile latency exceeded 1s for 5 minutes. On Cloud Run this
+            is usually a cold start after scale-to-zero; sustained, it means the
+            instance is undersized for the traffic.
+        labels:
+          severity: warning
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: query
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: >-
+                histogram_quantile(0.95, sum by (le)
+                (rate(http_request_duration_seconds_bucket{handler="/predict"}[5m])))
+              instant: true
+              refId: query
+          - refId: threshold
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: query
+              conditions:
+                - evaluator: {type: gt, params: [1.0]}
+              refId: threshold
+
+  - orgId: 1
+    name: credit-default-model
+    folder: credit-default
+    interval: 5m
+    rules:
+      - uid: cd-score-drift
+        title: Mean predicted default probability has shifted
+        condition: threshold
+        # Deliberately long. The score distribution moves slowly, and a shorter
+        # window would fire on ordinary batch-composition noise.
+        for: 30m
+        annotations:
+          summary: The model's score distribution has moved away from its training base rate.
+          description: >-
+            Mean predicted probability has been outside 0.12-0.34 for 30 minutes,
+            against a training base rate of 0.22. Ground-truth labels arrive months
+            after the prediction, so this is the earliest signal available that the
+            incoming population has changed. Run `make drift` for the feature-level
+            report before concluding the model is at fault - a broken upstream feed
+            looks identical from here.
+        labels:
+          severity: warning
+        noDataState: OK
+        execErrState: Error
+        data:
+          - refId: query
+            relativeTimeRange: {from: 1800, to: 0}
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: >-
+                rate(prediction_probability_sum[15m])
+                / clamp_min(rate(prediction_probability_count[15m]), 1e-9)
+              instant: true
+              refId: query
+          - refId: threshold
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: query
+              conditions:
+                - evaluator: {type: outside_range, params: [0.12, 0.34]}
+              refId: threshold
+
+      - uid: cd-no-traffic
+        title: API has served no predictions
+        condition: threshold
+        for: 15m
+        annotations:
+          summary: No predictions served for 15 minutes.
+          description: >-
+            Either callers have stopped sending traffic or the endpoint is failing
+            before it reaches the model. Silence is easy to miss precisely because
+            nothing looks broken on the error-rate panel.
+        labels:
+          severity: warning
+        # Here NoData genuinely is the alert condition.
+        noDataState: Alerting
+        execErrState: Error
+        data:
+          - refId: query
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: sum(rate(prediction_probability_count[15m]))
+              instant: true
+              refId: query
+          - refId: threshold
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: query
+              conditions:
+                - evaluator: {type: lt, params: [0.0001]}
+              refId: threshold

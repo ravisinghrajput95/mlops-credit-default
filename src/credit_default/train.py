@@ -74,6 +74,17 @@ logger = logging.getLogger(__name__)
 # safety check active for everything else.
 SKOPS_TRUSTED_TYPES = ["xgboost.core.Booster", "xgboost.sklearn.XGBClassifier"]
 
+# Hand-picked starting point, used when no search has been run. scripts/tune.py
+# reports against these so the value of tuning is measured, not assumed.
+DEFAULT_XGB_PARAMS: dict[str, Any] = {
+    "n_estimators": 400,
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "reg_lambda": 1.0,
+}
+
 
 @dataclass
 class Candidate:
@@ -82,7 +93,25 @@ class Candidate:
     params: dict[str, Any] = field(default_factory=dict)
 
 
-def candidates(seed: int) -> list[Candidate]:
+def _tuned_params(settings: Settings) -> dict[str, Any] | None:
+    """Load parameters from a completed search, if one has been run.
+
+    Kept optional on purpose: the pipeline must stay runnable from a clean clone
+    without first spending several minutes on a search.
+    """
+    path = settings.reports_dir / "best_params.json"
+    if not path.exists():
+        return None
+    try:
+        params = json.loads(path.read_text())["best_params"]
+        logger.info("Using tuned hyperparameters from %s", path)
+        return dict(params)
+    except (KeyError, ValueError):
+        logger.warning("Ignoring malformed %s", path)
+        return None
+
+
+def candidates(seed: int, tuned: dict[str, Any] | None = None) -> list[Candidate]:
     return [
         Candidate(
             name="logistic_regression",
@@ -92,21 +121,15 @@ def candidates(seed: int) -> list[Candidate]:
         Candidate(
             name="xgboost",
             estimator=XGBClassifier(
-                n_estimators=400,
-                max_depth=4,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_lambda=1.0,
+                **(tuned or DEFAULT_XGB_PARAMS),
                 eval_metric="aucpr",
                 random_state=seed,
                 n_jobs=-1,
             ),
             params={
                 "model_family": "xgboost",
-                "n_estimators": 400,
-                "max_depth": 4,
-                "learning_rate": 0.05,
+                "tuned": tuned is not None,
+                **(tuned or DEFAULT_XGB_PARAMS),
             },
         ),
     ]
@@ -309,7 +332,7 @@ def run(register: bool = True) -> dict[str, dict[str, float]]:
 
     results: dict[str, dict[str, float]] = {}
     fitted: dict[str, Pipeline] = {}
-    for candidate in candidates(settings.random_seed):
+    for candidate in candidates(settings.random_seed, _tuned_params(settings)):
         pipeline, metrics = train_candidate(candidate, train, test, settings)
         results[candidate.name] = metrics
         fitted[candidate.name] = pipeline

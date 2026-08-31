@@ -1,0 +1,26 @@
+apiVersion: 1
+
+# Contact points are provisioned as code like everything else. This one writes to
+# a local receiver so the alerting path is demonstrably wired end to end without
+# depending on a Slack or PagerDuty account existing.
+#
+# For a real deployment, replace `type: webhook` with `slack`, `pagerduty` or
+# `email` and supply the credential through the environment rather than this file.
+contactPoints:
+  - orgId: 1
+    name: credit-default-oncall
+    receivers:
+      - uid: local-webhook
+        type: webhook
+        settings:
+          url: http://alert-sink:8080/alert
+          httpMethod: POST
+
+policies:
+  - orgId: 1
+    receiver: credit-default-oncall
+    group_by: [alertname]
+    group_wait: 30s
+    group_interval: 2m
+    # An unacknowledged problem is re-sent every 4 hours rather than going quiet.
+    repeat_interval: 4h

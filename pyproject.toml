@@ -27,6 +27,7 @@ train = [
     "matplotlib>=3.9",
     "xlrd>=2.0",           # UCI ships the dataset as legacy .xls
     "requests>=2.32",
+    "optuna>=4.0",         # hyperparameter search
 ]
 
 # Inference API. This set defines the production image, so it is kept lean:
@@ -69,6 +70,7 @@ dev = [
     "pre-commit>=4.0",
     "pandas-stubs>=2.2",
     "types-requests>=2.32",
+    "locust>=2.40",        # load testing
 ]
 
 [build-system]
@@ -118,7 +120,9 @@ module = ["tests.*"]
 disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
+# tests/load holds a locust script, not pytest tests; it is run by `make load-test`.
 testpaths = ["tests"]
+norecursedirs = ["tests/load"]
 pythonpath = ["src"]
 addopts = "-q --strict-markers"
 markers = [

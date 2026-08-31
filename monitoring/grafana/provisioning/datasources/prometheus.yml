@@ -1,6 +1,9 @@
 apiVersion: 1
 datasources:
   - name: Prometheus
+    # Fixed uid so provisioned alert rules can reference this datasource. Without
+    # it Grafana assigns a random uid and every rule fails to bind on startup.
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090

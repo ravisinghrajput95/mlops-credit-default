@@ -120,6 +120,32 @@ services:
       postgres:
         condition: service_healthy
 
+  # Receives fired alerts and logs them, so the notification path can be shown
+  # working without a Slack or PagerDuty account. `docker compose logs alert-sink`
+  # shows what an on-call engineer would have been paged with.
+  alert-sink:
+    image: python:3.12-alpine
+    command:
+      - python
+      - -c
+      - |
+        import http.server, json
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("content-length", 0)))
+                try:
+                    for a in json.loads(body).get("alerts", []):
+                        print(f'ALERT {a.get("status","?").upper()}: '
+                              f'{a.get("labels",{}).get("alertname","?")} - '
+                              f'{a.get("annotations",{}).get("summary","")}', flush=True)
+                except Exception:
+                    print("ALERT (unparsed):", body[:500], flush=True)
+                self.send_response(200); self.end_headers()
+            def log_message(self, *a): pass
+        http.server.HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+    ports:
+      - "8080:8080"
+
 volumes:
   postgres-data:
   mlflow-artifacts:

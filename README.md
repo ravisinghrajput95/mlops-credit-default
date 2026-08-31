@@ -123,7 +123,8 @@ credentials needed.
 | Model | PR-AUC | ROC-AUC | Brier |
 | --- | --- | --- | --- |
 | Logistic regression | 0.547 | 0.773 | 0.136 |
-| **XGBoost** (champion) | **0.563** | **0.787** | **0.133** |
+| XGBoost, hand-picked params | 0.563 | 0.787 | 0.133 |
+| **XGBoost, tuned** (champion) | **0.566** | **0.791** | **0.132** |
 | No-skill baseline | 0.221 | 0.500 | — |
 
 Trained on 20 features, not the dataset's 23 — see
@@ -229,6 +230,29 @@ parity and equal opportunity — because they cannot both hold unless base rates
 are equal. Picking between them is a policy decision for legal and compliance,
 not something this repository should quietly settle.
 
+### Hyperparameter search, and reporting what it was worth
+
+`make tune` runs a 30-trial Optuna search (TPE sampler) optimising PR-AUC by
+stratified cross-validation **on the training set only** — selecting
+hyperparameters by test score would make the reported test number meaningless.
+Every trial is a nested MLflow run, so the search is inspectable rather than
+collapsing to a single best number.
+
+| | CV PR-AUC | Test PR-AUC | Test ROC-AUC |
+| --- | --- | --- | --- |
+| Hand-picked | 0.5516 | 0.5626 | 0.7870 |
+| **Tuned (30 trials)** | **0.5577** | **0.5657** | **0.7913** |
+
+The gain is modest — +0.006 CV, +0.003 on test — but it transferred to held-out
+data rather than only improving the score it was selected on, which is the check
+that matters. `scripts/tune.py` prints the comparison against the hand-picked
+baseline explicitly, because "tuning bought almost nothing" is a legitimate and
+useful result that a search reporting only its winner would hide.
+
+Tuning is optional: `train.py` picks up `reports/best_params.json` if it exists
+and falls back to the hand-picked defaults otherwise, so a clean clone trains
+without first spending minutes on a search.
+
 ### The decision threshold comes from cost, not from 0.5
 
 A classifier outputs a probability; turning that into approve/decline needs a
@@ -325,6 +349,7 @@ src/credit_default/
   promote.py             gated champion promotion
   fairness.py            group fairness audit (ECOA-protected attributes)
   threshold.py           cost-optimal decision cutoff
+  tuning.py              Optuna hyperparameter search
   monitoring/drift.py    Evidently drift check
   api/                   FastAPI app, model loading, prediction sinks
 flows/pipeline.py        Prefect: training, drift, retrain-on-drift
@@ -333,6 +358,46 @@ infra/gcp/               Terraform: budget first, then free-tier resources
 ```
 
 ---
+
+## Alerting and load
+
+Dashboards nobody is watching are not monitoring. Four alert rules are
+provisioned as code in `monitoring/grafana/provisioning/alerting/`:
+
+| Rule | Fires when | Severity |
+| --- | --- | --- |
+| API error rate | >1% 5xx for 5 minutes | critical |
+| p95 latency | >1s for 5 minutes | warning |
+| Score distribution shifted | mean predicted probability outside 0.12–0.34 for 30 min | warning |
+| No predictions served | silent for 15 minutes | warning |
+
+Two details worth noting. Every rule sets `noDataState` explicitly — the default
+turns a scrape gap into a page, which trains people to ignore alerts. And the
+score-drift rule uses a deliberately long 30-minute window, because the score
+distribution moves slowly and a shorter one fires on ordinary batch noise.
+
+The notification path is wired end to end to a local receiver, so it can be shown
+working without a Slack or PagerDuty account; swapping in a real one is a config
+change. `docker compose logs alert-sink` shows what on-call would have been paged
+with.
+
+### Load
+
+`make load-test` runs Locust against the local stack and **fails the process** if
+p95 exceeds 1s or the error rate exceeds 1% — the same thresholds the alert rules
+use, so a failing load test and a firing alert mean the same thing.
+
+```
+requests        3722
+failures        0 (0.00%)
+median          7 ms
+p95             18 ms   (target < 1000 ms)
+throughput      63.3 req/s
+```
+
+The interesting result is that batches of 10–50 rows add roughly 1ms over a
+single row (8ms vs 7ms median). Inference is not the bottleneck at this scale;
+per-request overhead is. That is worth knowing before optimising the wrong thing.
 
 ## Quality gates
 

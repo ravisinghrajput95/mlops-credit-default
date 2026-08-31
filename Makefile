@@ -2,12 +2,17 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 UV := uv run
+
+# Load-test defaults, overridable: make load-test USERS=100 TIME=5m
+USERS ?= 20
+TIME ?= 60s
+TRIALS ?= 30
 COMPOSE := docker compose
 TF := terraform -chdir=infra/gcp
 
 .PHONY: help setup lint format typecheck test test-cov check \
         ingest split train evaluate promote pipeline \
-        serve drift fairness simulate-drift flow-train flow-drift flow-retrain \
+        serve drift fairness tune load-test simulate-drift flow-train flow-drift flow-retrain \
         up down logs ps clean \
         docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost publish-model
 
@@ -60,6 +65,14 @@ pipeline: ## Run the full DVC pipeline (only re-runs what changed)
 	$(UV) dvc repro
 
 # ------------------------------------------------------------ monitoring ---
+
+tune: ## Search hyperparameters (writes reports/best_params.json, used by train)
+	$(UV) python scripts/tune.py --trials $(TRIALS)
+
+load-test: ## Load-test the running API (override: USERS=100 TIME=5m)
+	$(UV) locust -f tests/load/locustfile.py --headless \
+		--users $(USERS) --spawn-rate 5 --run-time $(TIME) \
+		--host http://localhost:8000
 
 fairness: ## Measure what excluding protected attributes costs
 	$(UV) python scripts/fairness_report.py
