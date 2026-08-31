@@ -58,6 +58,25 @@ class ModelHandle:
         # The cutoff this model was tuned for, read from its own metadata. A
         # constant in the API would silently drift away from the model it serves.
         self.threshold = threshold
+        self._explainer: Any | None = None
+
+    @property
+    def explainer(self) -> Any:
+        """Built on first use.
+
+        Constructing a TreeExplainer costs a moment, and an API that never
+        receives explain=true should not pay it at startup -- particularly on
+        Cloud Run, where startup time is cold-start latency for a real caller.
+        """
+        if self._explainer is None:
+            from credit_default.explain import Explainer
+
+            self._explainer = Explainer(self.model)
+        return self._explainer
+
+    def explain(self, frame: pd.DataFrame, declined: list[bool]) -> Any:
+        """Principal reasons per row, in the same order as the input."""
+        return self.explainer.explain(clean(frame)[FEATURES], declined)
 
     def predict(
         self, frame: pd.DataFrame, threshold: float | None = None

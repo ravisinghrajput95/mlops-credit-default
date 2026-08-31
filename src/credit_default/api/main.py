@@ -30,6 +30,7 @@ from credit_default.api.schemas import (
     Prediction,
     PredictionRequest,
     PredictionResponse,
+    Reason,
 )
 from credit_default.api.sinks import NullSink, PredictionSink, build_sink
 from credit_default.config import (
@@ -40,6 +41,12 @@ from credit_default.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+EXPLANATION_SECONDS = Histogram(
+    "explanation_duration_seconds",
+    "Time spent computing SHAP explanations",
+    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
+)
 
 PREDICTION_PROBABILITY = Histogram(
     "prediction_probability",
@@ -136,6 +143,17 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
     for probability in probabilities:
         PREDICTION_PROBABILITY.observe(probability)
 
+    reasons: list[list[Reason]] | None = None
+    if request.explain:
+        try:
+            with EXPLANATION_SECONDS.time():
+                raw = state.model.explain(frame, [bool(v) for v in labels])
+            reasons = [[Reason(**r.to_dict()) for r in row] for row in raw]
+        except Exception:
+            # An explanation failure must not deny someone a decision; the caller
+            # sees reasons omitted rather than a 500.
+            logger.exception("Explanation failed; returning predictions without reasons")
+
     now = dt.datetime.now(dt.UTC)
     background.add_task(
         _record,
@@ -154,8 +172,12 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
 
     return PredictionResponse(
         predictions=[
-            Prediction(probability=p, prediction=v)  # type: ignore[arg-type]
-            for p, v in zip(probabilities, labels, strict=True)
+            Prediction(
+                probability=p,
+                prediction=v,  # type: ignore[arg-type]
+                reasons=reasons[i] if reasons else None,
+            )
+            for i, (p, v) in enumerate(zip(probabilities, labels, strict=True))
         ],
         model_version=state.model.version,
         threshold=state.model.threshold,

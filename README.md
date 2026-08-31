@@ -258,6 +258,59 @@ Tuning is optional: `train.py` picks up `reports/best_params.json` if it exists
 and falls back to the hand-picked defaults otherwise, so a clean clone trains
 without first spending minutes on a search.
 
+### Per-decision explanations, because a decline needs a reason
+
+Under ECOA and Regulation B, a declined applicant must be told the **principal
+reasons** — not a score, and not "the model said so". A model that cannot explain
+an individual decision is not deployable in consumer lending however well it
+ranks.
+
+`POST /predict` with `"explain": true` returns SHAP attributions per application:
+
+```json
+{
+  "probability": 0.7958,
+  "prediction": 1,
+  "reasons": [
+    {"description": "repayment status in the most recent month", "value": 2,
+     "contribution": 1.0412, "direction": "increased_risk"},
+    {"description": "repayment status two months ago", "value": 2,
+     "contribution": 0.2740, "direction": "increased_risk"}
+  ]
+}
+```
+
+Four things this gets right that a feature-importance ranking would not:
+
+- **The attributions are exact and additive.** Base value plus contributions
+  reconstructs the model's raw output to within 1e-6, which is asserted in the
+  tests. That property is what makes SHAP defensible to a regulator; global
+  importance says nothing about the individual in front of you.
+- **Contributions are attributed to source columns, not encoded ones.** The model
+  sees `PAY_0_2`; the applicant hears "repayment status in the most recent month".
+  The mapping is built from the fitted transformer's structure rather than by
+  parsing names — `PAY_0_-1` and `PAY_AMT1` are not separable by prefix.
+- **A decline reports only risk-increasing factors.** Listing what *helped* an
+  applicant who was refused is not an adverse-action reason.
+- **Protected attributes can never appear**, since they are not model inputs. A
+  test asserts it.
+
+Opt-in, because it costs latency. Measured overhead:
+
+| Batch size | Without | With | Overhead |
+| --- | --- | --- | --- |
+| 1 | 3.3ms | 6.6ms | +3.3ms |
+| 50 | 4.2ms | 12.6ms | +8.4ms |
+| 200 | 6.6ms | 37.6ms | +31.0ms |
+
+Roughly double for a single decision, which is nothing when that decision is
+going to be communicated to a person. A bulk scoring job that will never send a
+notice should not pay it.
+
+Explanations are best-effort: if the explainer fails, the caller gets the
+prediction with reasons omitted rather than a 500. Refusing to answer at all is
+the worse failure.
+
 ### The decision threshold comes from cost, not from 0.5
 
 A classifier outputs a probability; turning that into approve/decline needs a
@@ -352,6 +405,7 @@ src/credit_default/
   train.py               candidates, MLflow logging, registry
   evaluate.py            quality gate (exits non-zero to fail a build)
   promote.py             gated champion promotion
+  explain.py             SHAP adverse-action reasons
   fairness.py            group fairness audit (ECOA-protected attributes)
   threshold.py           cost-optimal decision cutoff
   tuning.py              Optuna hyperparameter search

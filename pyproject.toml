@@ -28,6 +28,7 @@ train = [
     "xlrd>=2.0",           # UCI ships the dataset as legacy .xls
     "requests>=2.32",
     "optuna>=4.0",         # hyperparameter search
+    "shap>=0.48",          # per-decision explanations
 ]
 
 # Inference API. This set defines the production image, so it is kept lean:
@@ -40,6 +41,7 @@ serve = [
     "scikit-learn>=1.6",   # needed to deserialise the model pipeline
     "xgboost-cpu>=2.1",    # see the train extra: no CUDA payload
     "mlflow-skinny>=3.0",  # model loading + registry client, no server
+    "shap>=0.48",          # adverse-action reasons at inference
     "skops>=0.11",         # the serialisation format mlflow 3 defaults to
     "prometheus-fastapi-instrumentator>=7.0",
     "psycopg[binary]>=3.2",

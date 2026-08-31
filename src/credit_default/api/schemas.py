@@ -88,11 +88,35 @@ class CreditApplication(BaseModel):
 
 class PredictionRequest(BaseModel):
     applications: Annotated[list[CreditApplication], Field(min_length=1, max_length=1000)]
+    # Opt-in because it costs latency. A decline that will be communicated to the
+    # applicant needs reasons; a bulk scoring job usually does not.
+    explain: bool = Field(
+        default=False,
+        description="Return the principal reasons for each decision (adverse-action reasons).",
+    )
+
+
+class Reason(BaseModel):
+    feature: str
+    description: str = Field(description="Plain-language name the applicant can act on.")
+    value: float
+    contribution: float = Field(
+        description="SHAP value; positive means this raised the predicted risk."
+    )
+    direction: Literal["increased_risk", "decreased_risk"]
 
 
 class Prediction(BaseModel):
     probability: Annotated[float, Field(ge=0.0, le=1.0)]
     prediction: Literal[0, 1]
+    reasons: list[Reason] | None = Field(
+        default=None,
+        description=(
+            "Principal reasons, present only when explain=true. For a declined "
+            "application these are the factors that increased risk, which is what "
+            "an adverse-action notice must state."
+        ),
+    )
 
 
 class PredictionResponse(BaseModel):

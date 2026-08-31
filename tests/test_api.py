@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
 
 from credit_default.api import main as api_main
 from credit_default.api.model import ModelHandle
@@ -31,7 +31,12 @@ class RecordingSink(PredictionSink):
 @pytest.fixture
 def client(monkeypatch):
     frame = make_frame()
-    pipeline = build_pipeline(LogisticRegression(max_iter=500))
+    # XGBoost rather than a linear model: the champion is gradient-boosted, and
+    # SHAP's TreeExplainer only supports tree models, so a linear stand-in would
+    # exercise a different explanation path from the one that ships.
+    pipeline = build_pipeline(
+        XGBClassifier(n_estimators=40, max_depth=3, eval_metric="logloss", random_state=0)
+    )
     pipeline.fit(frame[FEATURES], frame[TARGET])
 
     monkeypatch.setattr(api_main.state, "model", ModelHandle(pipeline, "test-1", "local"))
@@ -150,3 +155,61 @@ def test_model_info_declares_what_the_model_may_not_use(client):
     # The attributes stay in the request contract so they can still be audited.
     for attribute in body["excluded_attributes"]:
         assert attribute in body["features"]
+
+
+def test_explanations_are_off_by_default(client, application):
+    """They cost latency, so a bulk scoring caller should not pay for them."""
+    body = client.post("/predict", json={"applications": [application]}).json()
+    assert body["predictions"][0]["reasons"] is None
+
+
+def test_explanations_are_returned_when_requested(client, application):
+    response = client.post("/predict", json={"applications": [application], "explain": True})
+    assert response.status_code == 200
+
+    reasons = response.json()["predictions"][0]["reasons"]
+    assert reasons, "explain=true must return reasons"
+    for reason in reasons:
+        assert reason["description"]
+        assert reason["direction"] in ("increased_risk", "decreased_risk")
+
+
+def test_a_declined_application_gets_adverse_action_reasons(client, application):
+    """The reasons for a refusal must be the factors that raised risk."""
+    delinquent = {**application, **{f"PAY_{i}": 2 for i in (0, 2, 3, 4, 5, 6)}}
+    delinquent.update({f"PAY_AMT{i}": 0 for i in range(1, 7)})
+
+    body = client.post("/predict", json={"applications": [delinquent], "explain": True}).json()
+    prediction = body["predictions"][0]
+
+    if prediction["prediction"] == 1:
+        assert all(r["direction"] == "increased_risk" for r in prediction["reasons"])
+
+
+def test_explanations_never_cite_a_protected_attribute(client, application):
+    body = client.post("/predict", json={"applications": [application], "explain": True}).json()
+    cited = {r["feature"] for r in body["predictions"][0]["reasons"]}
+    assert not (cited & {"SEX", "MARRIAGE", "AGE"})
+
+
+def test_one_set_of_reasons_per_application(client, application):
+    body = client.post("/predict", json={"applications": [application] * 3, "explain": True}).json()
+    assert len(body["predictions"]) == 3
+    assert all(p["reasons"] for p in body["predictions"])
+
+
+def test_an_unexplainable_model_still_serves_predictions(client, application, monkeypatch):
+    """A failure to explain must not deny someone a decision.
+
+    Explanations are best-effort: the caller gets reasons omitted rather than a
+    500, because refusing to answer at all is the worse failure.
+    """
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("explainer unavailable")
+
+    monkeypatch.setattr(api_main.state.model, "explain", boom)
+
+    response = client.post("/predict", json={"applications": [application], "explain": True})
+    assert response.status_code == 200
+    assert response.json()["predictions"][0]["reasons"] is None
