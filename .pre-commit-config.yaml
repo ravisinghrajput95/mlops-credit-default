@@ -15,8 +15,11 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
 
+  # Must match the ruff version in pyproject.toml. A pre-commit hook pinned to an
+  # older ruff formats differently from the one CI runs, so commits pass locally
+  # and then fail the format check in CI.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.16.5
     hooks:
       - id: ruff
         args: [--fix]

@@ -139,9 +139,9 @@ def test_prediction_is_invariant_to_protected_attributes(client, application, at
         assert response.status_code == 200
         probabilities.append(response.json()["predictions"][0]["probability"])
 
-    assert (
-        len(set(probabilities)) == 1
-    ), f"changing {attribute} changed the prediction: {probabilities}"
+    assert len(set(probabilities)) == 1, (
+        f"changing {attribute} changed the prediction: {probabilities}"
+    )
 
 
 def test_model_info_declares_what_the_model_may_not_use(client):
