@@ -1,0 +1,103 @@
+schema: '2.0'
+stages:
+  ingest:
+    cmd: python -m credit_default.data.ingest
+    deps:
+    - path: src/credit_default/data/ingest.py
+      hash: md5
+      md5: 8f8e9b27182eda5620ed6ef2149c95c6
+      size: 2843
+    outs:
+    - path: data/raw/credit_default.parquet
+      hash: md5
+      md5: 3ce6d81e6947cc01f1becb7dbeb8207d
+      size: 1569553
+  split:
+    cmd: python -m credit_default.data.split
+    deps:
+    - path: data/raw/credit_default.parquet
+      hash: md5
+      md5: 3ce6d81e6947cc01f1becb7dbeb8207d
+      size: 1569553
+    - path: src/credit_default/data/schema.py
+      hash: md5
+      md5: 7ba078937b1561a5cb56a5c60ddd31aa
+      size: 3466
+    - path: src/credit_default/data/split.py
+      hash: md5
+      md5: 23ff69db0b981edd1f3eb88cdad04c6d
+      size: 2731
+    outs:
+    - path: data/processed/current.parquet
+      hash: md5
+      md5: 020baadb78a31c79614a54bff2aaad1c
+      size: 433307
+    - path: data/processed/reference.parquet
+      hash: md5
+      md5: ee5f8e0d1b1726e0672206444c12c5f9
+      size: 1208000
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: c37cd4df747553faebffa8ef856d1d64
+      size: 265186
+    - path: data/processed/train.parquet
+      hash: md5
+      md5: 875dd80b565d80b8cbd9ebece33e9003
+      size: 985066
+    - path: reports/split_summary.json
+      hash: md5
+      md5: ffa7d79302426c74c6dcf80b9bcf594c
+      size: 265
+  train:
+    cmd: python -m credit_default.train
+    deps:
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: c37cd4df747553faebffa8ef856d1d64
+      size: 265186
+    - path: data/processed/train.parquet
+      hash: md5
+      md5: 875dd80b565d80b8cbd9ebece33e9003
+      size: 985066
+    - path: src/credit_default/features/pipeline.py
+      hash: md5
+      md5: 526812bcfa5bca7edf944a5484bdf01e
+      size: 1794
+    - path: src/credit_default/train.py
+      hash: md5
+      md5: 7a32096f55bf3a817591814010128fc2
+      size: 9993
+    outs:
+    - path: data/models/model
+      hash: md5
+      md5: c989847404561d940d77fbdd4a727c5c.dir
+      size: 821799
+      nfiles: 5
+    - path: reports/metrics.json
+      hash: md5
+      md5: 0601d32ac3c9dc63f0991ee7abc192a6
+      size: 711
+    - path: reports/xgboost/calibration.png
+      hash: md5
+      md5: f09ac977f41f1333851df71ae66c6b05
+      size: 32821
+    - path: reports/xgboost/precision_recall.png
+      hash: md5
+      md5: 514869146551b8760704a445ce013fe2
+      size: 28987
+  evaluate:
+    cmd: python -m credit_default.evaluate
+    deps:
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: c37cd4df747553faebffa8ef856d1d64
+      size: 265186
+    - path: src/credit_default/evaluate.py
+      hash: md5
+      md5: 51f9a0766cfc55700f2396f024c4d28a
+      size: 3786
+    outs:
+    - path: reports/gate.json
+      hash: md5
+      md5: 03e9c8486e77002f6d29d51d6883d84d
+      size: 651
