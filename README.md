@@ -81,6 +81,9 @@ flowchart LR
         UCI[UCI archive] --> ING[ingest]
         ING --> VAL[pandera contract]
         VAL --> SPL[cohort split]
+        VAL --> EV[(feature store:\n180k monthly events)]
+        EV --> PIT{{as-of join}}
+        PIT --> LEAK[leakage report]
     end
 
     subgraph Training
@@ -119,6 +122,7 @@ flowchart LR
     style CHAMP fill:#15803d,color:#fff
     style GATE fill:#a16207,color:#fff
     style JOIN fill:#a16207,color:#fff
+    style PIT fill:#a16207,color:#fff
     style CENS fill:#b91c1c,color:#fff
 ```
 
@@ -440,6 +444,87 @@ been `validate`d but never applied to a live project, since GCP is currently tor
 down — and this README already documents three Terraform defects that only
 appeared on a real apply, so treat it accordingly.
 
+### The feature store, and the leak the column names invite
+
+`make feature-report` runs the measurement below.
+
+The UCI file looks like 30,000 rows of 23 attributes. It is not. Eleven of those
+columns are six monthly observations of three quantities, flattened sideways:
+`PAY_0`/`BILL_AMT1`/`PAY_AMT1` describe September 2005, `PAY_6`/`BILL_AMT6`/`PAY_AMT6`
+describe April, and the target is default in October. **The time dimension was
+there the whole time, wearing a disguise.** So unlike the drift and the label
+arrival times, none of this section is simulated — the months are real, the
+ordering is real, and so is the leakage.
+
+`featurestore/events.py` unfolds the wide frame into 180,000 monthly events, and
+a test asserts the round-trip is lossless, because a transformation that silently
+mis-dates an observation changes the data every model downstream trains on and
+nothing else would catch it. The column names lay a trap on the way: September's
+repayment status is `PAY_0`, not `PAY_1`, while September's bill is `BILL_AMT1`.
+Anyone deriving the month from the numeric suffix mis-dates a sixth of the
+observations.
+
+Features are then aggregates over a window **ending at an as-of date** — worst
+delinquency, months delinquent, bill trend, mean payment ratio, utilisation. That
+is what makes correctness fragile here. A single-month attribute is hard to leak;
+it either belongs to the as-of month or it does not. An aggregate leaks silently,
+because widening the window by a month changes the value without changing the
+column name, the dtype, or anything a schema check inspects.
+
+So `pit.py` ships both joins: the correct one, and `latest_join` — which
+aggregates every month the store holds regardless of the as-of date. That is not
+a strawman. It is what `GROUP BY customer_id` returns, and what a feature table
+queried today gives you for a label from last quarter.
+
+| As of | Months visible | Corrupted values | Leaked (reported) | Leaked model, honest features | Honest (real) | Production penalty |
+| --- | --- | --- | --- | --- | --- | --- |
+| Apr 2005 | 1 | 72% | 0.5573 | 0.3850 | 0.4088 | −0.0238 |
+| May 2005 | 2 | 71% | 0.5573 | 0.4110 | 0.4377 | −0.0267 |
+| Jun 2005 | 3 | 70% | 0.5573 | 0.4283 | 0.4482 | −0.0199 |
+| Jul 2005 | 4 | 68% | 0.5573 | 0.4525 | 0.4712 | −0.0186 |
+| Aug 2005 | 5 | 66% | 0.5573 | 0.4926 | 0.4995 | −0.0069 |
+| **Sep 2005** | **6** | **0%** | **0.5573** | **0.5573** | **0.5573** | **0.0000** |
+
+Three things this says that the usual framing does not.
+
+**The overstatement is large.** Scoring as of April, a leaky join reports 0.5573
+against an honest 0.4088 — it claims a model 36% better than the one that exists.
+The leaked column is flat at 0.5573 across every date, which is the tell: a
+pipeline that ignores the as-of date produces the same answer whatever date you
+ask about, and that constancy is what a reviewer should look for.
+
+**Leakage does not merely inflate the estimate — it ships a worse model.** The
+middle column is the same leaked model handed the features production can
+actually supply. It scores *below* the honest model at every date, by up to
+0.027. Nothing about the model changed there, only what it was fed: the weights
+were fitted to months that will not exist at serving time, so it learned to lean
+on information it will never receive. Leakage is usually described as a reporting
+problem. It is a modelling one, and this is the column nobody computes.
+
+**It converges, which is exactly why it survives review.** At September the joins
+agree on every value and all three numbers coincide. Once the as-of date reaches
+the last observation there is no future left to leak, so a leaky pipeline looks
+perfectly healthy — right up until it is asked about the past. That row is also
+the honest self-check on this implementation: if the correct and careless joins
+did not agree there, something in the unfold would be wrong.
+
+**The shipped champion does not use this store**, and does not need to. It trains
+on the flat feature set at the last observable month — the September row above,
+where the two joins agree on every value. It is therefore point-in-time correct
+by construction rather than by enforcement, which is a weaker guarantee resting
+on a fact about the data rather than on a rule in the code. Wiring the store into
+the training path would replace that fact with a rule; it would also invalidate
+every measured number in this README, so it is left as the deliberate next step
+rather than done halfway.
+
+**What is not built:** no online store and no streaming ingestion, so there is no
+read path with serving-latency guarantees; the spine uses one shared as-of date
+rather than a different one per application, because varying two things at once
+would make the comparison above unreadable; and `LIMIT_BAL` is treated as static
+because the dataset gives it no time dimension — a real credit line moves, and a
+store recording it as static would backdate today's limit onto last quarter's
+decision.
+
 ### Drift monitoring instead of accuracy monitoring
 
 Whether a customer actually defaults is known months after the prediction is
@@ -607,6 +692,7 @@ Portfolio projects are easy to oversell. To be explicit:
 | | Status |
 | --- | --- |
 | Dataset | **Real.** Public UCI data, downloaded at runtime. |
+| Feature store and its time axis | **Real.** The six monthly observations are in the source data. |
 | Model and metrics | **Real.** Reproducible with `make pipeline`. |
 | Serving, monitoring, CI/CD | **Real.** Runs locally; CI runs on every push. |
 | API authentication | **Real**, and off by default. The Terraform half is unapplied. |
@@ -648,6 +734,12 @@ make labels           # replay a cohort as traffic, let outcomes arrive late,
 make flow-labels      # the same back-fill as a Prefect flow, reporting coverage
 ```
 
+And the feature store:
+
+```bash
+make feature-report   # what a point-in-time-incorrect join costs, per as-of date
+```
+
 ---
 
 ## Repository layout
@@ -666,6 +758,9 @@ src/credit_default/
   threshold.py           cost-optimal decision cutoff
   tuning.py              Optuna hyperparameter search
   monitoring/drift.py    Evidently drift check
+  featurestore/events.py wide frame -> 180k monthly events, losslessly
+  featurestore/views.py  window aggregates, defined once for both joins
+  featurestore/pit.py    the as-of join (and the careless one, for contrast)
   labels/store.py        outcome store: event time vs ingestion time
   labels/arrival.py      SYNTHETIC arrival lags - the simulated boundary
   labels/backfill.py     point-in-time join (and the naive one, for contrast)
