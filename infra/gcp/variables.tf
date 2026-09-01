@@ -54,3 +54,30 @@ variable "image" {
   type        = string
   default     = "us-docker.pkg.dev/cloudrun/container/hello"
 }
+
+variable "api_keys" {
+  description = <<-EOT
+    API keys for the inference endpoint, as "name:secret" pairs separated by
+    commas. Names identify callers in the prediction log, so a decision can be
+    attributed rather than merely permitted.
+
+    Deliberately has no default: deploying a credit-scoring endpoint should be a
+    decision about who may call it, not something that inherits a value. Set it
+    to "" to opt out explicitly -- the service then starts unauthenticated and
+    says so in its logs on every boot.
+
+    Generate one with:
+      python -c 'import secrets; print(secrets.token_urlsafe(32))'
+
+    Note this lands in Terraform state, which is therefore as sensitive as the
+    key itself. A deployment handling real applicants would source it from
+    Secret Manager and reference the version here instead.
+  EOT
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = var.api_keys == "" || length(var.api_keys) >= 24
+    error_message = "An API key must be at least 24 characters. Use \"\" to opt out of authentication explicitly."
+  }
+}

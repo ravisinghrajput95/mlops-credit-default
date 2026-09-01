@@ -66,6 +66,13 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       PREDICTION_SINK: postgres
       POSTGRES_DSN: postgresql://mlops:mlops@postgres:5432/mlops
+      # Passed through from the host so no key is ever committed here. Unset
+      # means the stack comes up unauthenticated, which keeps a clean clone
+      # working; the API logs a warning on every such boot. To turn it on:
+      #   export API_KEYS="local:$(python -c 'import secrets;print(secrets.token_urlsafe(32))')"
+      #   export REQUIRE_AUTH=true && make up
+      REQUIRE_AUTH: ${REQUIRE_AUTH:-false}
+      API_KEYS: ${API_KEYS:-}
       LOG_LEVEL: INFO
     ports:
       - "8000:8000"

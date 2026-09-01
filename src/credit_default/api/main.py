@@ -16,13 +16,20 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
+from fastapi.security import HTTPAuthorizationCredentials
 from prometheus_client import Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from credit_default.api.auth import (
+    Authenticator,
+    bearer_scheme,
+    build_authenticator,
+    credentials_secret,
+)
 from credit_default.api.model import ModelHandle, load_model
 from credit_default.api.schemas import (
     HealthResponse,
@@ -60,15 +67,40 @@ class AppState:
 
     model: ModelHandle | None = None
     sink: PredictionSink = NullSink()
+    # Open until the lifespan replaces it, so that a test constructing the app
+    # without running startup gets the documented default rather than an
+    # AttributeError. Every deployed path goes through the lifespan.
+    auth: Authenticator = Authenticator([], required=False)
 
 
 state = AppState()
+
+
+def require_caller(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> str:
+    """Resolve the caller's name, or reject with 401.
+
+    Returns a name rather than a bool so the caller can be written to the
+    prediction log: a credit decision should record who asked for it.
+    """
+    return state.auth.identify(credentials_secret(credentials))
+
+
+Caller = Annotated[str, Depends(require_caller)]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level, format="%(levelname)s %(message)s")
+
+    # Deliberately not wrapped in try/except, unlike everything else in this
+    # function. A missing model degrades; a broken auth configuration must not.
+    # "No keys configured" would mean the endpoint stops being able to reject
+    # anyone, and an API that has quietly stopped checking is worse than one that
+    # is plainly failing to start.
+    state.auth = build_authenticator(settings.api_keys.get_secret_value(), settings.require_auth)
 
     try:
         state.model = load_model(settings)
@@ -110,7 +142,7 @@ def health() -> HealthResponse:
 
 
 @app.get("/model-info", response_model=ModelInfoResponse)
-def model_info() -> ModelInfoResponse:
+def model_info(caller: Caller) -> ModelInfoResponse:
     if state.model is None:
         raise HTTPException(status_code=503, detail="No model is loaded.")
     settings = get_settings()
@@ -127,7 +159,9 @@ def model_info() -> ModelInfoResponse:
 
 
 @app.post("/predict", response_model=PredictionResponse)
-def predict(request: PredictionRequest, background: BackgroundTasks) -> PredictionResponse:
+def predict(
+    request: PredictionRequest, background: BackgroundTasks, caller: Caller
+) -> PredictionResponse:
     if state.model is None:
         raise HTTPException(status_code=503, detail="No model is loaded.")
 
@@ -165,6 +199,10 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
             {
                 "id": str(uuid.uuid4()),
                 "application_id": application_id,
+                # Who asked. An adverse-action decision that cannot be traced to
+                # a requester is a hole in the same audit trail the SHAP reasons
+                # exist to fill.
+                "caller": caller,
                 "predicted_at": now,
                 "model_version": state.model.version,
                 "probability": probability,

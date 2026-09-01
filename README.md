@@ -360,6 +360,86 @@ Two implementation details that matter more than they look:
   the model it serves — which it did, until every persistence path was fixed to
   carry it.
 
+### Authentication, and recording who asked
+
+`/predict` and `/model-info` require `Authorization: Bearer <key>`. `/health` and
+`/metrics` do not, and that split is a design decision rather than an oversight:
+Cloud Run's startup and liveness probes hit `/health`, and Prometheus scrapes
+`/metrics` unauthenticated. Putting a key in front of either converts a
+monitoring gap into an outage, or a probe failure into a crash loop.
+
+Keys are configured as `name:secret` pairs, and **the name is the point**. A
+credit decision is a regulated act, so the caller is written into the prediction
+log beside the score and the reasons — `batch-scoring`, not "someone with a valid
+key". The adverse-action work already answers *why* an applicant was declined;
+this answers *who asked*, which is the other half of the same audit trail.
+
+Four decisions worth defending:
+
+- **Misconfiguration fails closed.** If authentication is demanded and no keys
+  are configured, the process refuses to start. This is deliberately the opposite
+  of how the model loader behaves — a missing model degrades `/health` and keeps
+  serving, because an API reporting its own illness beats a crash loop. A missing
+  key list cannot degrade that way, because "no keys" would mean "nobody can be
+  rejected". An endpoint that has quietly stopped checking is worse than one that
+  is plainly down. A test asserts the app actually fails to start, not merely
+  that the constructor raises.
+- **A bad key is 401, never 403.** 403 means "we know who you are and you may
+  not". There is no authorisation layer here, so every rejection is a failure to
+  authenticate. Returning 403 misreports the failure to the caller and to whoever
+  reads the logs.
+- **Every key is compared, every time.** `secrets.compare_digest`, and no early
+  return on the first match — stopping early would make response time depend on a
+  key's position in the list, which is the same leak constant-time comparison
+  exists to close. The measured cost of that choice:
+
+  | Configured keys | Per check |
+  | --- | --- |
+  | 1 | 0.09 µs |
+  | 10 | 0.39 µs |
+  | 50 | 1.64 µs |
+
+  Against a ~3 ms request even the 50-key case is 0.05% of the latency budget,
+  and end-to-end the difference is not measurable above run-to-run jitter. There
+  was no trade to make here, which is worth knowing rather than assuming.
+- **Keys cannot reach a log.** They are held in a `SecretStr`, so a stray
+  `repr(settings)` in a traceback or a Prefect run log prints `**********`. A
+  rejected key is not echoed either — a wrong credential is still a credential,
+  and log aggregators are not secret stores. Both are asserted.
+
+**It is off by default**, which is a real trade and not one made quietly: a clean
+clone has to run with no setup, so the API instead logs a warning on every
+unauthenticated boot. `docker-compose` passes `REQUIRE_AUTH` and `API_KEYS`
+through from the host rather than committing a key, and the Terraform variable
+has **no default at all**, so deploying forces the decision rather than
+inheriting one.
+
+```bash
+export API_KEYS="local:$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export REQUIRE_AUTH=true && make up
+```
+
+A route-protection test enumerates every route in the app and asserts each one is
+either on an explicit public list or behind the dependency. Adding an endpoint
+without deciding who may call it fails the build rather than shipping open, which
+is the failure this feature is most likely to have in six months.
+
+Verified against a running server rather than only in the test suite: `/health`
+and `/metrics` answered 200 with no credential, `/predict` and `/model-info`
+returned 401 with a `WWW-Authenticate: Bearer` challenge, a wrong key returned
+401 rather than 403, a valid one returned 200, the key appeared zero times in the
+logs, and a process started with `REQUIRE_AUTH=true` and no keys exited non-zero
+instead of serving. The `caller` column migration was applied twice against the
+live 26,113-row table with the rows untouched.
+
+**What is not built:** per-key rate limiting, key rotation or expiry, and any
+authorisation layer — every valid key can do everything. Bearer keys are shared
+secrets with no per-user identity; a lender would want OIDC with a real
+principal. The Terraform change is also the one piece of this repository that has
+been `validate`d but never applied to a live project, since GCP is currently torn
+down — and this README already documents three Terraform defects that only
+appeared on a real apply, so treat it accordingly.
+
 ### Drift monitoring instead of accuracy monitoring
 
 Whether a customer actually defaults is known months after the prediction is
@@ -529,6 +609,7 @@ Portfolio projects are easy to oversell. To be explicit:
 | Dataset | **Real.** Public UCI data, downloaded at runtime. |
 | Model and metrics | **Real.** Reproducible with `make pipeline`. |
 | Serving, monitoring, CI/CD | **Real.** Runs locally; CI runs on every push. |
+| API authentication | **Real**, and off by default. The Terraform half is unapplied. |
 | **Data drift** | **Simulated.** See below. |
 | **Label arrival times** | **Simulated.** The labels and the censoring are real. See below. |
 | Cloud deployment | **Real but ephemeral.** Torn down between demos. |
@@ -590,6 +671,7 @@ src/credit_default/
   labels/backfill.py     point-in-time join (and the naive one, for contrast)
   labels/performance.py  retrospective scoring, censoring correction
   api/                   FastAPI app, model loading, prediction sinks
+  api/auth.py            bearer keys, named callers, fail-closed startup
 flows/pipeline.py        Prefect: training, drift, retrain-on-drift, label backfill
 infra/gcp/               Terraform: budget first, then free-tier resources
 .github/workflows/       CI, CD, scheduled drift check

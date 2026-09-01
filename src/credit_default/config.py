@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -184,6 +184,19 @@ class Settings(BaseSettings):
     model_source: Literal["registry", "local", "gcs"] = "local"
     local_model_path: Path = PROJECT_ROOT / "data" / "models" / "model"
     gcs_model_uri: str = ""
+
+    # --- authentication ----------------------------------------------------
+    # Off by default so a clean clone runs with no setup, which the rest of this
+    # project also assumes. That is a real trade and it is not made silently: the
+    # API logs a warning on every unauthenticated boot. docker-compose passes
+    # REQUIRE_AUTH and API_KEYS through from the host rather than committing a
+    # key, and Terraform derives this flag from whether api_keys was supplied --
+    # a variable with no default, so deploying forces the decision.
+    require_auth: bool = False
+    # "name:secret,name2:secret2". Names identify callers in the prediction log,
+    # so a decision can be attributed rather than merely permitted. SecretStr so
+    # that a stray repr(settings) in a traceback prints ********** and not a key.
+    api_keys: SecretStr = SecretStr("")
 
     # --- prediction sink ---------------------------------------------------
     # Postgres locally (docker-compose); GCS Parquet in the cloud, which keeps
