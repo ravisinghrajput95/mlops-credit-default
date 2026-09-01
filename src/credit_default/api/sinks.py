@@ -51,6 +51,7 @@ class PostgresSink(PredictionSink):
         predicted_at   TIMESTAMPTZ NOT NULL,
         model_version  TEXT,
         probability    DOUBLE PRECISION NOT NULL,
+        caller         TEXT,
         prediction     SMALLINT NOT NULL,
         features       JSONB NOT NULL
     );
@@ -62,6 +63,7 @@ class PostgresSink(PredictionSink):
     # join is worthless without this key, so it is worth the two milliseconds.
     MIGRATIONS: ClassVar[list[str]] = [
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS application_id TEXT;",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS caller TEXT;",
         "CREATE INDEX IF NOT EXISTS predictions_application_id_idx"
         " ON predictions (application_id);",
     ]
@@ -82,13 +84,14 @@ class PostgresSink(PredictionSink):
         with self._connect() as conn, conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO predictions"
-                " (id, application_id, predicted_at, model_version, probability,"
+                " (id, application_id, caller, predicted_at, model_version, probability,"
                 "  prediction, features)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 [
                     (
                         r["id"],
                         r.get("application_id"),
+                        r.get("caller"),
                         r["predicted_at"],
                         r["model_version"],
                         r["probability"],

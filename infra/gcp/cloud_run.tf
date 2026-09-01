@@ -44,6 +44,18 @@ resource "google_cloud_run_v2_service" "api" {
         value = "gs://${google_storage_bucket.predictions.name}/served"
       }
 
+      # On exactly when keys are supplied. Deriving it rather than exposing a
+      # second flag removes the one combination that bricks a deploy: demanding
+      # authentication with no keys, which the API refuses to start under.
+      env {
+        name  = "REQUIRE_AUTH"
+        value = var.api_keys == "" ? "false" : "true"
+      }
+      env {
+        name  = "API_KEYS"
+        value = var.api_keys
+      }
+
       ports {
         container_port = 8000
       }
@@ -69,8 +81,13 @@ resource "google_cloud_run_v2_service" "api" {
   depends_on = [google_project_service.required, google_billing_budget.guardrail]
 }
 
-# Public read access. This is a portfolio demo with no sensitive data; a real
-# credit-scoring endpoint would sit behind authentication.
+# Reachable without a Google identity, which is what makes the demo URL
+# shareable. That is not the same as unprotected: with api_keys set, an
+# unauthenticated request reaches the container and gets a 401 from the
+# application. The two layers answer different questions -- Cloud Run IAM asks
+# "may this principal invoke the service", the API asks "which caller is this,
+# and record it against the decision". A deployment serving real applicants
+# would use both, dropping allUsers in favour of named invokers.
 resource "google_cloud_run_v2_service_iam_member" "public" {
   location = google_cloud_run_v2_service.api.location
   name     = google_cloud_run_v2_service.api.name
