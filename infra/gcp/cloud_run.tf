@@ -44,6 +44,12 @@ resource "google_cloud_run_v2_service" "api" {
         value = "gs://${google_storage_bucket.predictions.name}/served"
       }
 
+      # Marking api_keys sensitive makes Terraform redact *every* env block on
+      # this container in plan output, not just this one -- sensitivity spreads
+      # across the block set. That is a real loss of reviewability, and it is
+      # still the right trade: the alternative prints the key into plan output
+      # and into any CI log that captures it.
+      #
       # On exactly when keys are supplied. Deriving it rather than exposing a
       # second flag removes the one combination that bricks a deploy: demanding
       # authentication with no keys, which the API refuses to start under.
