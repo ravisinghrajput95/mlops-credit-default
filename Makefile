@@ -13,7 +13,7 @@ TF := terraform -chdir=infra/gcp
 .PHONY: help setup lint format typecheck test test-cov check \
         ingest split train evaluate promote pipeline \
         serve drift fairness tune load-test simulate-drift flow-train flow-drift flow-retrain \
-        simulate-labels label-report labels flow-labels \
+        simulate-labels label-report labels flow-labels feature-report \
         up down logs ps clean \
         docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost publish-model
 
@@ -96,6 +96,11 @@ label-report: ## Measure late-label bias, censoring and the holdout tradeoff
 	MODEL_SOURCE=local $(UV) python scripts/label_report.py
 
 labels: simulate-labels label-report ## Run the whole delayed-label loop end to end
+
+# ------------------------------------------------------ feature store ------
+
+feature-report: ## Measure what a point-in-time-incorrect feature join costs
+	$(UV) python scripts/feature_store_report.py
 
 # ------------------------------------------------------------ orchestration -
 
