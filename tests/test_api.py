@@ -118,7 +118,49 @@ def test_predictions_are_recorded_for_monitoring(client, application, monkeypatc
 
     assert len(sink.records) == 2
     record = sink.records[0]
-    assert {"id", "predicted_at", "probability", "prediction", "features"} <= record.keys()
+    assert {
+        "id",
+        "application_id",
+        "predicted_at",
+        "probability",
+        "prediction",
+        "features",
+    } <= record.keys()
+
+
+def test_the_application_id_is_echoed_so_an_outcome_can_be_reported_later(client, application):
+    """The label pipeline lives or dies on this. An outcome arrives months after
+    the score, and a caller who was never told the key has no way to report it."""
+    body = client.post(
+        "/predict", json={"applications": [{**application, "application_id": "APP-42"}]}
+    ).json()
+    assert body["predictions"][0]["application_id"] == "APP-42"
+
+
+def test_an_application_id_is_generated_when_the_caller_omits_one(client, application):
+    """Optional for the caller, never absent from the record: an unkeyed
+    prediction is one that can never be learned from."""
+    body = client.post("/predict", json={"applications": [application]}).json()
+    assert body["predictions"][0]["application_id"]
+
+
+def test_the_application_id_never_reaches_the_model(client, application, monkeypatch):
+    """It identifies the decision; it is not evidence about the applicant.
+    Letting an arbitrary key into the feature frame would be a plain leak."""
+    sink = RecordingSink()
+    monkeypatch.setattr(api_main.state, "sink", sink)
+
+    client.post("/predict", json={"applications": [{**application, "application_id": "APP-7"}]})
+
+    assert "application_id" not in sink.records[0]["features"]
+    assert set(sink.records[0]["features"]) == set(FEATURES)
+
+
+def test_two_applications_get_distinct_generated_keys(client, application):
+    """Identical payloads are still two separate decisions with two outcomes."""
+    body = client.post("/predict", json={"applications": [application, application]}).json()
+    first, second = (p["application_id"] for p in body["predictions"])
+    assert first != second
 
 
 def test_metrics_endpoint_exposes_the_prediction_histogram(client, application):

@@ -26,6 +26,22 @@ RepaymentStatus = Annotated[int, Field(ge=-2, le=9)]
 class CreditApplication(BaseModel):
     """One customer's billing history, as the model expects it."""
 
+    # The caller's own reference for this application. Optional, and echoed back
+    # generated if omitted, because it is the only thing that makes a decision
+    # addressable later: the outcome of a loan arrives months after the score,
+    # and a prediction nobody can name is a prediction nobody can ever learn
+    # from. It is deliberately NOT a model feature -- see main.predict, which
+    # strips it before the frame reaches the pipeline.
+    application_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Caller's reference for this application, echoed in the response and "
+            "used to join the eventual outcome back to this decision. Generated "
+            "if omitted."
+        ),
+    )
+
     LIMIT_BAL: Annotated[int, Field(gt=0, le=2_000_000, description="Credit limit (NT$)")]
     SEX: Literal[1, 2] = Field(description="1 = male, 2 = female")
     EDUCATION: Annotated[int, Field(ge=0, le=6, description="1 = graduate school ... 4 = other")]
@@ -57,6 +73,7 @@ class CreditApplication(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
+                    "application_id": "APP-000123",
                     "LIMIT_BAL": 200000,
                     "SEX": 2,
                     "EDUCATION": 2,
@@ -107,6 +124,10 @@ class Reason(BaseModel):
 
 
 class Prediction(BaseModel):
+    # Echoed so the caller can report an outcome against this exact decision
+    # later. Returning the score without a key would make the label pipeline
+    # impossible from the outside, however well it worked internally.
+    application_id: str
     probability: Annotated[float, Field(ge=0.0, le=1.0)]
     prediction: Literal[0, 1]
     reasons: list[Reason] | None = Field(

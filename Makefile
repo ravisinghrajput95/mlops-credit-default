@@ -13,6 +13,7 @@ TF := terraform -chdir=infra/gcp
 .PHONY: help setup lint format typecheck test test-cov check \
         ingest split train evaluate promote pipeline \
         serve drift fairness tune load-test simulate-drift flow-train flow-drift flow-retrain \
+        simulate-labels label-report labels flow-labels \
         up down logs ps clean \
         docker-build cloud-init cloud-plan cloud-up cloud-down cloud-cost publish-model
 
@@ -83,6 +84,19 @@ drift: ## Compare the current cohort against reference
 simulate-drift: ## Inject SYNTHETIC drift to demo the monitor (undo with: make split)
 	$(UV) python scripts/simulate_drift.py
 
+# ------------------------------------------------------------ labels -------
+# Ground truth arrives months after the decision. These targets replay a cohort
+# as served traffic, let its outcomes come back late, and measure what the delay
+# and the censoring do to a performance number.
+
+simulate-labels: ## Replay a cohort as traffic and let outcomes arrive on a SYNTHETIC lag
+	MODEL_SOURCE=local $(UV) python scripts/simulate_label_arrival.py
+
+label-report: ## Measure late-label bias, censoring and the holdout tradeoff
+	MODEL_SOURCE=local $(UV) python scripts/label_report.py
+
+labels: simulate-labels label-report ## Run the whole delayed-label loop end to end
+
 # ------------------------------------------------------------ orchestration -
 
 flow-train: ## Run the training flow via Prefect
@@ -93,6 +107,9 @@ flow-drift: ## Run the drift-check flow via Prefect
 
 flow-retrain: ## Retrain if drift is detected (registers @challenger; never promotes)
 	$(UV) python -c "from flows.pipeline import retrain_on_drift; retrain_on_drift()"
+
+flow-labels: ## Back-fill arrived labels and report coverage (reports only; never promotes)
+	$(UV) python -c "from flows.pipeline import label_backfill_flow; label_backfill_flow()"
 
 # --------------------------------------------------------------- serving ---
 

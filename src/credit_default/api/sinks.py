@@ -17,7 +17,7 @@ import json
 import logging
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from credit_default.config import Settings
 
@@ -46,19 +46,32 @@ class PostgresSink(PredictionSink):
 
     DDL = """
     CREATE TABLE IF NOT EXISTS predictions (
-        id            UUID PRIMARY KEY,
-        predicted_at  TIMESTAMPTZ NOT NULL,
-        model_version TEXT,
-        probability   DOUBLE PRECISION NOT NULL,
-        prediction    SMALLINT NOT NULL,
-        features      JSONB NOT NULL
+        id             UUID PRIMARY KEY,
+        application_id TEXT,
+        predicted_at   TIMESTAMPTZ NOT NULL,
+        model_version  TEXT,
+        probability    DOUBLE PRECISION NOT NULL,
+        prediction     SMALLINT NOT NULL,
+        features       JSONB NOT NULL
     );
     """
+
+    # CREATE TABLE IF NOT EXISTS is a no-op against a table that already exists,
+    # so a new column would never appear on a stack that has been running since
+    # before the label pipeline. Applied every startup and idempotent; the label
+    # join is worthless without this key, so it is worth the two milliseconds.
+    MIGRATIONS: ClassVar[list[str]] = [
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS application_id TEXT;",
+        "CREATE INDEX IF NOT EXISTS predictions_application_id_idx"
+        " ON predictions (application_id);",
+    ]
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         with self._connect() as conn:
             conn.execute(self.DDL)
+            for statement in self.MIGRATIONS:
+                conn.execute(statement)
 
     def _connect(self) -> Any:
         import psycopg
@@ -69,11 +82,13 @@ class PostgresSink(PredictionSink):
         with self._connect() as conn, conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO predictions"
-                " (id, predicted_at, model_version, probability, prediction, features)"
-                " VALUES (%s, %s, %s, %s, %s, %s)",
+                " (id, application_id, predicted_at, model_version, probability,"
+                "  prediction, features)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 [
                     (
                         r["id"],
+                        r.get("application_id"),
                         r["predicted_at"],
                         r["model_version"],
                         r["probability"],

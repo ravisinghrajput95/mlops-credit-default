@@ -9,7 +9,8 @@ A production-shaped machine learning system, not a notebook. It predicts whether
 a credit-card customer will default next month, and wraps that model in the
 things that actually make ML work in production: a data contract, experiment
 tracking, a model registry with gated promotion, a validated serving API,
-drift monitoring, CI/CD, and infrastructure as code.
+drift monitoring, a delayed-label loop that closes back to measured performance,
+CI/CD, and infrastructure as code.
 
 The model itself is deliberately unremarkable. The point is everything around it.
 
@@ -65,7 +66,8 @@ reference and current distributions side by side.
 
 **Validated API** — the request schema is generated from the same contract the
 training data is validated against, so malformed input gets a 422, not a
-prediction.
+prediction. Every response carries an `application_id`, which is what makes the
+outcome joinable when it turns up a quarter later.
 
 ![Swagger UI showing the /predict endpoint and its request schema](docs/images/api-docs.jpg)
 
@@ -105,9 +107,19 @@ flowchart LR
         RETRAIN --> CHAL
     end
 
+    subgraph Truth["Ground truth, one quarter later"]
+        SINK --> JOIN{{point-in-time join}}
+        OUT[(outcome store)] --> JOIN
+        JOIN -->|matured and reported| PERF[retrospective performance]
+        JOIN -->|declined: no outcome ever| CENS[censored]
+        PERF --> REPORT[report only, never a gate]
+    end
+
     style STOP fill:#b91c1c,color:#fff
     style CHAMP fill:#15803d,color:#fff
     style GATE fill:#a16207,color:#fff
+    style JOIN fill:#a16207,color:#fff
+    style CENS fill:#b91c1c,color:#fff
 ```
 
 The dotted line from challenger to champion is the only step in the whole system
@@ -269,6 +281,7 @@ ranks.
 
 ```json
 {
+  "application_id": "APP-000123",
   "probability": 0.7958,
   "prediction": 1,
   "reasons": [
@@ -354,6 +367,149 @@ served. Waiting for labels means discovering a broken model a quarter late. So
 the system monitors what is observable now: input feature distributions
 (Evidently) and the distribution of predicted scores (a Prometheus histogram).
 
+Drift is the signal available *now*. The next section is the truth, available a
+quarter late. Both are needed and neither replaces the other.
+
+### Labels arrive months late, and almost everything about that is a trap
+
+`make labels` runs the whole delayed-label loop and prints the numbers below.
+
+The obvious version of this feature is a table of outcomes and a join. Building
+it that way produces a number that is wrong in three independent directions at
+once, and every one of them makes the model look better or worse than it is
+without ever looking broken. So each is measured.
+
+**Before any of it, a prediction has to be addressable.** `/predict` used to return a score
+and nothing else, while the sink recorded a random UUID it never told anyone. An
+outcome arriving four months later had nothing to join to. Applications now carry
+an optional `application_id`, echoed in the response and generated when omitted;
+it is stripped before the frame reaches the model, because it identifies the
+decision rather than describing the applicant. A test asserts it never reaches
+the feature set. This is a small change that the rest of the section depends on
+completely: **a prediction nobody can name is a prediction nobody can learn
+from.**
+
+**First, there are three timestamps, not one.** The outcome becomes *defined*
+when the performance window closes (`matures_at`); it becomes *known* when the
+servicing file lands (`observed_at`); those are different dates and neither is
+the decision date. An evaluation dated `T` may only use predictions matured by
+`T` and outcomes reported by `T`.
+
+`labels/backfill.py` ships both the correct join and the naive one, because the
+gap between them is the argument for the correct one:
+
+| Join, evaluating as of day 150 | Rows scored | Observed default rate | PR-AUC |
+| --- | --- | --- | --- |
+| Point-in-time correct | 1,861 | 0.0790 | 0.1653 |
+| Naive (joins on the key alone) | 4,428 | 0.1098 | 0.2010 |
+| **Imported from the future** | **2,567** | | **+0.0356** |
+
+The naive join is not subtly wrong; it silently more than doubles the evaluation
+set with rows nobody had yet, and it reports a **better** score for doing it. It
+is kept in the source so a test can assert the two disagree — if they ever
+coincide, the guarantee has quietly evaporated while every other test still
+passes.
+
+**Second, an immature cohort does not look incomplete. It looks healthy.** A
+non-default is known the moment the window closes: nothing happened. A default
+has to be established through missed payments, collections and charge-off, so it
+lands later. The observable default rate therefore starts low and climbs as the
+slow tail arrives:
+
+| As of | Matured | Coverage | Labels | Observed default rate | Observed PR-AUC |
+| --- | --- | --- | --- | --- | --- |
+| day 90 | 34% | 18% | 467 | 0.0345 | 0.0648 |
+| day 180 | 84% | 41% | 2,551 | 0.0824 | 0.1273 |
+| day 270 | 100% | 57% | 4,284 | 0.0937 | 0.1376 |
+| day 400 | 100% | 59% | 4,428 | **0.1060** | 0.1564 |
+
+The observed default rate triples between day 90 and day 400. **Nothing about the
+model or the population changed** — those are the same 7,500 decisions on the same
+data throughout. A dashboard comparing this month's observed rate against last
+month's would report a large, sustained, entirely fictional improvement in
+portfolio quality, and a retraining job triggered on that signal would be
+learning from an artefact. This is why `flow-labels` reports coverage and refuses
+to draw conclusions below a floor, rather than scoring whatever has arrived.
+
+**Third, and worst: the model chose which labels you get to see.** A declined
+applicant never opens an account, so no outcome exists — not late, never. At the
+cost-derived threshold that censors 42% of decisions, and it censors exactly the
+risky end. Measuring on approvals alone means measuring over a truncated range of
+the model's own output:
+
+| Estimate | Rows | Effective rows | PR-AUC |
+| --- | --- | --- | --- |
+| Observed (approved only) | 4,376 | 4,376 | 0.1564 |
+| IPW-corrected (holdout reweighted) | 4,428 | 362 | 0.6273 ± 0.0776 |
+| *Full population (answer key, not observable in production)* | *7,500* | *7,500* | *0.5488* |
+| Offline test PR-AUC, full population | 4,500 | | 0.5657 |
+| **Offline test PR-AUC, approved subpopulation** | **2,565** | | **0.1303** |
+
+Read row 1 against row 4 — the comparison a monitoring dashboard makes by default
+— and production PR-AUC has collapsed by **0.41**, which would look like a
+catastrophic model failure. Read it against row 5, the offline score recomputed
+over the same approved subpopulation, and it is **+0.026**: the model is fine.
+The collapse is entirely an artefact of the model having selected its own test
+set. (The two are different cohorts, so a few points of that gap is ordinary
+cohort variation, not signal.)
+
+**The fix is to buy back the rejected range.** A small random share of
+would-be-declines is approved anyway, so the censored region stays observable and
+the selection probability is known exactly — which makes Horvitz-Thompson
+reweighting valid. It is the only estimate in the table that recovers the truth,
+and it is not free:
+
+| Holdout | Extra approvals | IPW PR-AUC | Spread | Error vs truth | Cost / 1k applicants |
+| --- | --- | --- | --- | --- | --- |
+| 1% | 31 | 0.5715 | 0.1263 | +0.0227 | 5.5 |
+| **2%** | **62** | **0.5622** | **0.0802** | **+0.0133** | **10.4** |
+| 5% | 154 | 0.5697 | 0.0491 | +0.0209 | 27.1 |
+| 10% | 311 | 0.5599 | 0.0375 | +0.0111 | 54.4 |
+| 25% | 782 | 0.5411 | 0.0249 | −0.0077 | 133.0 |
+
+Mean of 25 independent draws per rate against a true value of 0.5488; cost is in
+the same units as the decision threshold, so it is comparable to the
+expected-cost figures above.
+
+The honest reading is that **the bias goes away almost immediately and the
+variance does not.** Even a 1% holdout is roughly unbiased — the error column
+never exceeds a third of the spread at any rate. What a bigger holdout buys is
+precision, and it buys it at close to linear cost. At the shipped 2% the estimate
+is unbiased and still has a standard deviation of 0.08, which is wide enough that
+it can detect a model falling over but not a model drifting slowly. Reporting the
+point estimate without that spread would be the single most misleading number in
+this repository, which is why `effective rows` sits next to it: 4,428 labels
+carry the statistical weight of about **362**.
+
+**Verified against the live stack, not just the offline replay.** The whole loop
+was run through Postgres: the API served keyed predictions, the sink migration
+applied to an existing 26,113-row `predictions` table without touching it, the
+outcome store recorded and de-duplicated, and the join filtered on real SQL. Three
+things that only showed up by running it:
+
+- A cohort served minutes ago reports **0 of 300 matured**. The gate refuses to
+  score it, which is the correct answer and not one an offline replay ever
+  exercises.
+- The 26,113 predictions served before this change carry no key, so they can
+  never be joined to an outcome. They are not recoverable — the join names this
+  explicitly rather than silently returning fewer rows. Adding the key was cheap;
+  not having had it is permanent.
+- At 300 decisions a 2% holdout is **one row**, and the corrected estimate comes
+  back as 0.93 ± 0.41 — unbiased in expectation and useless in practice. The
+  report now refuses to present an estimate below 100 effective rows and instead
+  says the cohort is too small, because that figure is otherwise indistinguishable
+  on the page from a real one.
+
+**What this deliberately does not do.** No gate, no promotion, no retrain trigger
+runs off these numbers. Production label metrics are censored, late, and noisy
+even after correction; a quality gate wired to them would fire on maturity
+effects far more often than on real regressions. The gate stays on the offline
+test set, where the population is fixed and complete, and this pipeline reports.
+For the same reason the label stages are not DVC stages: the outcome store is
+append-only and stateful by design — an outcome is a historical fact, and a
+restated label is ignored rather than applied — so it is not a pure function of
+its inputs and does not belong in a `dvc repro` DAG.
+
 ### No managed database in the cloud
 
 Cloud SQL has no always-free tier and would have been the only line item on the
@@ -374,8 +530,19 @@ Portfolio projects are easy to oversell. To be explicit:
 | Model and metrics | **Real.** Reproducible with `make pipeline`. |
 | Serving, monitoring, CI/CD | **Real.** Runs locally; CI runs on every push. |
 | **Data drift** | **Simulated.** See below. |
+| **Label arrival times** | **Simulated.** The labels and the censoring are real. See below. |
 | Cloud deployment | **Real but ephemeral.** Torn down between demos. |
 | AWS deployment | **Not built.** See `infra/aws/README.md`. |
+
+The same static snapshot causes the same problem twice, and the boundary is drawn
+in the same place both times: in the delayed-label pipeline the labels are the
+real UCI ground truth and the censoring is a real consequence of applying the
+model's own cost-derived threshold to real data — which applicants get declined,
+and therefore never generate an outcome, is not a scenario anyone chose. What is
+invented is purely *when* each decision was made and *when* each outcome came
+back, because the dataset carries no timestamps to measure. All of that lives in
+`labels/arrival.py` and `scripts/simulate_label_arrival.py`, so the real/simulated
+line is a file boundary, and the script prints a warning every time it runs.
 
 The dataset is a single static snapshot with no time dimension, so it contains no
 genuine drift to detect. `scripts/simulate_drift.py` injects an explicit,
@@ -390,6 +557,14 @@ make drift            # baseline: 0/23 columns drifted
 make simulate-drift   # inject the synthetic shift
 make drift            # now 8/23 columns drifted, exits non-zero
 make split            # restore the clean cohort (the split is seeded)
+```
+
+And the label loop:
+
+```bash
+make labels           # replay a cohort as traffic, let outcomes arrive late,
+                      # then measure the join, the maturity and the censoring
+make flow-labels      # the same back-fill as a Prefect flow, reporting coverage
 ```
 
 ---
@@ -410,8 +585,12 @@ src/credit_default/
   threshold.py           cost-optimal decision cutoff
   tuning.py              Optuna hyperparameter search
   monitoring/drift.py    Evidently drift check
+  labels/store.py        outcome store: event time vs ingestion time
+  labels/arrival.py      SYNTHETIC arrival lags - the simulated boundary
+  labels/backfill.py     point-in-time join (and the naive one, for contrast)
+  labels/performance.py  retrospective scoring, censoring correction
   api/                   FastAPI app, model loading, prediction sinks
-flows/pipeline.py        Prefect: training, drift, retrain-on-drift
+flows/pipeline.py        Prefect: training, drift, retrain-on-drift, label backfill
 infra/gcp/               Terraform: budget first, then free-tier resources
 .github/workflows/       CI, CD, scheduled drift check
 ```
