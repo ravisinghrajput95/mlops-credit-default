@@ -130,6 +130,38 @@ class Settings(BaseSettings):
     # Fallback when a model carries no tuned threshold in its metadata.
     default_decision_threshold: float = 0.5
 
+    # --- delayed labels ----------------------------------------------------
+    # Ground truth in credit risk is not late by accident; it is late by
+    # definition. Two distinct delays stack up, and conflating them is what makes
+    # a backtest lie:
+    #
+    #   performance window -- how long after the decision the outcome is even
+    #     *defined*. UCI's target is literally "default payment next month", so
+    #     30 days is the true window for this dataset, not an invention.
+    #   reporting lag -- how long after that before the outcome reaches whoever
+    #     is measuring: collections cycles, servicer files, month-end close.
+    #
+    # Only the reporting lag is a modelling assumption here; see labels/arrival.py.
+    label_performance_window_days: int = 30
+    # A non-default is known the moment the window closes -- nothing happened.
+    label_reporting_lag_days: int = 45
+    # A default is not. It is confirmed through a collections and charge-off
+    # process, so it lands later. This asymmetry is the whole reason an immature
+    # cohort looks like a model that has started over-predicting risk.
+    label_reporting_lag_default_days: int = 75
+
+    # Share of applicants the policy would decline who are approved anyway, at
+    # random, purely to generate labels in the rejected range. Without it the
+    # model permanently chooses its own test set and its performance above the
+    # cutoff can never be measured again -- the reject-inference problem. Real
+    # lenders run exactly this, under names like "test-and-learn" or a swap-set.
+    # It is not free: every holdout approval is a knowingly-riskier account.
+    label_holdout_fraction: float = 0.02
+
+    # Where late-arriving outcomes are recorded. Parquet keeps the demo hermetic
+    # and offline; Postgres is the live path alongside the prediction sink.
+    label_store: Literal["parquet", "postgres", "none"] = "parquet"
+
     # --- model quality gate ------------------------------------------------
     # The class balance is ~22% positive, so PR-AUC is the primary metric;
     # accuracy would be ~78% for a model that never predicts default.
@@ -194,6 +226,16 @@ class Settings(BaseSettings):
     @property
     def test_parquet(self) -> Path:
         return self.processed_dir / "test.parquet"
+
+    @property
+    def served_predictions_parquet(self) -> Path:
+        """Predictions replayed through the model, standing in for served traffic."""
+        return self.processed_dir / "served_predictions.parquet"
+
+    @property
+    def outcomes_parquet(self) -> Path:
+        """Outcomes as they arrive -- the late-arriving label store."""
+        return self.processed_dir / "outcomes.parquet"
 
     @property
     def metrics_path(self) -> Path:

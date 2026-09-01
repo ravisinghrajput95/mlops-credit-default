@@ -55,6 +55,66 @@ def drift_task(source: str = "cohort") -> dict[str, Any]:
     return run(source)
 
 
+@task(log_prints=True)
+def label_backfill_task(source: str = "parquet") -> dict[str, Any]:
+    """Join whatever outcomes have arrived onto the decisions they belong to."""
+    import datetime as dt
+
+    from credit_default.labels.backfill import join_labels, load_served_predictions
+    from credit_default.labels.store import build_outcome_store
+
+    settings = get_settings()
+    served = load_served_predictions(settings, source)
+    outcomes = build_outcome_store(settings).read()
+    join = join_labels(
+        served,
+        outcomes,
+        dt.datetime.now(dt.UTC),
+        settings.label_performance_window_days,
+    )
+    return join.to_dict()
+
+
+@flow(name="label-backfill", log_prints=True)
+def label_backfill_flow(source: str = "parquet", min_coverage: float = 0.5) -> dict[str, Any]:
+    """Report how much ground truth has arrived, and refuse to score too early.
+
+    This flow deliberately produces a *report*, never a promotion or a retrain.
+    Coverage below the floor is the normal state of a recent cohort, not an
+    incident: the labels are late by definition. Acting on a partial cohort is
+    the failure mode, because defaults are reported more slowly than
+    non-defaults, so an immature book always looks safer than it is.
+    """
+    logger = get_run_logger()
+    summary = label_backfill_task(source)
+
+    if summary["coverage"] < min_coverage:
+        logger.warning(
+            "Coverage is %.1f%% of %d matured decisions -- below the %.0f%% floor. "
+            "Too early to score this cohort; the slow tail of defaults has not landed.",
+            summary["coverage"] * 100,
+            summary["matured"],
+            min_coverage * 100,
+        )
+    else:
+        logger.info(
+            "Coverage %.1f%% over %d matured decisions (%d labelled, %d pending, "
+            "%d censored as declined). Safe to score.",
+            summary["coverage"] * 100,
+            summary["matured"],
+            summary["observed"],
+            summary["pending"],
+            summary["censored"],
+        )
+
+    logger.info(
+        "Any performance number from this cohort covers approved applicants only. "
+        "Compare it against the offline score on the same approved subpopulation, "
+        "never against the headline test metric -- see scripts/label_report.py."
+    )
+    return summary
+
+
 @flow(name="training", task_runner=ThreadPoolTaskRunner(max_workers=1), log_prints=True)
 def training_flow(skip_ingest: bool = False) -> dict[str, Any]:
     """Full training run: data, model, quality gate. Does not promote."""

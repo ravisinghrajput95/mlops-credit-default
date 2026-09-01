@@ -131,7 +131,11 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
     if state.model is None:
         raise HTTPException(status_code=503, detail="No model is loaded.")
 
-    payload = [a.model_dump() for a in request.applications]
+    # The key is stripped before the frame is built: it identifies the decision,
+    # it is not evidence about the applicant. Letting it reach the pipeline would
+    # be a straightforward leak of an arbitrary identifier into the model.
+    application_ids = [a.application_id or str(uuid.uuid4()) for a in request.applications]
+    payload = [a.model_dump(exclude={"application_id"}) for a in request.applications]
     frame = pd.DataFrame(payload)
 
     try:
@@ -160,24 +164,30 @@ def predict(request: PredictionRequest, background: BackgroundTasks) -> Predicti
         [
             {
                 "id": str(uuid.uuid4()),
+                "application_id": application_id,
                 "predicted_at": now,
                 "model_version": state.model.version,
                 "probability": probability,
                 "prediction": label,
                 "features": features,
             }
-            for probability, label, features in zip(probabilities, labels, payload, strict=True)
+            for application_id, probability, label, features in zip(
+                application_ids, probabilities, labels, payload, strict=True
+            )
         ],
     )
 
     return PredictionResponse(
         predictions=[
             Prediction(
+                application_id=application_id,
                 probability=p,
                 prediction=v,  # type: ignore[arg-type]
                 reasons=reasons[i] if reasons else None,
             )
-            for i, (p, v) in enumerate(zip(probabilities, labels, strict=True))
+            for i, (application_id, p, v) in enumerate(
+                zip(application_ids, probabilities, labels, strict=True)
+            )
         ],
         model_version=state.model.version,
         threshold=state.model.threshold,
