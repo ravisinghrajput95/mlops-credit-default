@@ -785,10 +785,35 @@ loader open and checks that startup has already completed and the app is
 answering while the load is still in flight. If anyone moves the load back onto
 the startup path, that test blocks and times out instead of quietly regressing.
 
-**Cold start is 5–6 minutes to `/ready`** on the free tier, which is why the
-startup probe's budget is ten minutes rather than the 70 seconds it began with.
-That budget is a ceiling and not a wait: a probe that answers sooner proceeds
-sooner, and the cost of setting it too low is a deploy that fails.
+**The container's own log lines are the proof, and they were unreadable until the
+`logWriter` fix.** From a verified cold start on the deployed service:
+
+```
+17:28:45.485  Started server process
+17:28:45.485  Waiting for application startup.
+17:28:45.491  Application startup complete.        <- 6ms
+17:28:45.514  Uvicorn running on http://0.0.0.0:8000  <- port bound
+17:29:04.960  Model loaded; the API is now ready to serve.  <- 19.4s later
+```
+
+Lifespan startup finishes in **6 milliseconds**, because the model is no longer
+on it, and the socket is open 30ms after the process starts. The model then
+takes **19.4 seconds** — and that is the entire window the old arrangement spent
+with the port closed and probes getting a refused connection. `/health` answered
+`loading` and `/ready` answered 503 throughout it, which is exactly the
+behaviour the split exists to provide.
+
+End to end, `gcloud run deploy` returned in **1m14s** including the revision
+passing its startup probe. An earlier figure of 5–6 minutes appears on no
+current measurement: it dates from the throttled, pre-`startup_cpu_boost`
+container, where the same imports alone took 5m07s.
+
+The startup probe's budget is nonetheless ten minutes rather than the 70 seconds
+it began with, and stays there deliberately. **The budget is a ceiling, not a
+wait** — a probe that answers in 20 seconds proceeds in 20 seconds, so headroom
+is free, while the cost of setting it too low is a deploy that fails on a slow
+day. Sizing it to a good measurement would be optimising the number that costs
+nothing against the failure that costs a deploy.
 
 ### No managed database in the cloud
 
@@ -1022,8 +1047,28 @@ service.** It probed `/health`, which is public by design and therefore answers
 200 whether or not authentication survived the deploy. A check that cannot fail
 is not a check. It now reads `REQUIRE_AUTH` back off the deployed service rather
 than assuming it, and when it is on, asserts that `/model-info` answers 401 to an
-anonymous caller. **This is the one fix on this page that has not itself been
-verified by running** — the workflow has not fired since it was changed.
+anonymous caller.
+
+**All seven are now verified against a live project, including this one.** The
+whole stack was rebuilt from nothing, exercised, and destroyed again:
+
+| Check | Result |
+| --- | --- |
+| Resources applied | 26 created + 2 imported = **28**; `destroy` removed 28 |
+| Image before CD / after | `cloudrun/container/hello` → `api:62bb808`, the merge commit |
+| `REQUIRE_AUTH` across the deploy | `true` before, **`true` after** |
+| `API_KEYS` across the deploy | present before, **present after** |
+| CD's own auth assertion | fired and passed, not the fall-through warning |
+| `/model-info` anonymous / wrong key / valid key | **401 / 401 / 200**, with `WWW-Authenticate: Bearer` |
+| Threshold reaching serving | **0.17**, carried in the artifact's metadata |
+| Prediction written to GCS | `caller: batch-scoring`, beside a joinable `application_id` |
+| Rejected key in the logs | warning logged, **key itself absent** |
+
+The env-var rows are the point. The image was replaced in that same deploy, so
+`--set-env-vars` would have wiped both auth variables and the service would have
+come back serving anyone — and the old `/health`-only smoke test would have gone
+green over it. The new check asserted the 401 itself, on the deployed service,
+and its own log line says so.
 
 ### Notes for anyone reproducing this
 
@@ -1050,11 +1095,13 @@ Environment problems that cost real time here, in case they save you some:
 - **MLflow needs `--serve-artifacts`**, or it hands clients its own artifact path
   and they try to write it on their own filesystem.
 - **`terraform destroy` does not fully delete a Workload Identity pool.** It goes
-  into a 30-day soft-delete, and so does its OIDC provider — separately. Bringing
-  the stack back up means undeleting *both* and `terraform import`ing both before
-  the next apply; recreating them fails with `ALREADY_EXISTS` against a resource
-  nothing can see. The provider is the easy one to miss, because undeleting the
-  pool does not bring it back with it.
+  into a 30-day soft-delete, and so does its OIDC provider — separately, and
+  undeleting the pool does not bring the provider back with it. Worse, the
+  provider **cannot even be listed while the pool is deleted**: the command
+  returns `NOT_FOUND`, so the resource easiest to forget is also the one you
+  cannot see in order to remember it. Undelete the pool, *then* list providers,
+  then `terraform import` both before applying — otherwise the apply fails
+  `ALREADY_EXISTS` against resources nothing can show you.
 - **The first apply cannot ship the real image.** `var.image` defaults to a
   hello-world placeholder because Artifact Registry does not exist yet and there
   is nowhere to push to. So bringing the stack up is two applies: one to create
