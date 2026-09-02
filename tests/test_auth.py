@@ -35,11 +35,12 @@ GOOD = "T5nQb2kZ8vJw3yR7pLxA6mCdHfGsEu91"  # 32 chars, well over the floor
 OTHER = "Z9aB8cD7eF6gH5iJ4kL3mN2oP1qR0sTu"
 
 # Endpoints that must stay reachable without a credential, and why. Prometheus
-# scrapes /metrics with no auth, and Cloud Run's startup and liveness probes hit
-# /health -- putting a key in front of either turns a monitoring gap into an
-# outage, or a probe failure into a crash loop.
+# scrapes /metrics with no auth, Cloud Run's liveness probe hits /health and its
+# startup probe hits /ready -- putting a key in front of any of them turns a
+# monitoring gap into an outage, or a probe failure into a crash loop.
 PUBLIC_PATHS = {
     "/health",
+    "/ready",
     "/metrics",
     "/",
     "/docs",
@@ -64,6 +65,9 @@ def authenticated_client(monkeypatch):
         api_main.state, "auth", Authenticator([ApiKey("batch-scoring", GOOD)], required=True)
     )
     with TestClient(api_main.app) as client:
+        # The model loads on a worker thread now; let that attempt finish before
+        # injecting the test model, so the loader cannot race the assignment.
+        api_main.state.load_complete.wait(timeout=30)
         monkeypatch.setattr(api_main.state, "model", ModelHandle(pipeline, "test-1", "local"))
         monkeypatch.setattr(api_main.state, "sink", NullSink())
         monkeypatch.setattr(
@@ -220,9 +224,19 @@ def test_model_info_is_protected(authenticated_client):
 
 
 def test_health_stays_open_because_probes_use_it(authenticated_client):
-    """Cloud Run's startup and liveness probes hit /health. Authenticating it
-    turns a deployment into a crash loop."""
+    """Cloud Run's liveness probe hits /health. Authenticating it turns a
+    deployment into a crash loop."""
     assert authenticated_client.get("/health").status_code == 200
+
+
+def test_readiness_stays_open_because_the_startup_probe_uses_it(authenticated_client):
+    """Cloud Run's startup probe hits /ready before any caller could hold a key.
+
+    A credential on this endpoint means the revision never becomes ready, which
+    presents as a failed deploy rather than as an authentication error -- the
+    single least debuggable way for this to go wrong.
+    """
+    assert authenticated_client.get("/ready").status_code == 200
 
 
 def test_metrics_stays_open_because_prometheus_scrapes_it(authenticated_client):

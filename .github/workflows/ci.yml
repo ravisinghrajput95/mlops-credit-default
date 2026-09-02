@@ -131,11 +131,23 @@ jobs:
       - name: Smoke test the image
         run: |
           docker run -d --name api -p 8000:8000 -e MODEL_SOURCE=local credit-default-api:ci
+          # The port now opens before the model load finishes, so /health answers
+          # "loading" almost immediately. Accepting the first 200 would therefore
+          # assert nothing beyond "the socket is open" -- so wait for a terminal
+          # state instead, which is what actually proves the background loader ran
+          # to completion rather than hanging.
           for i in $(seq 1 30); do
-            if curl -sf localhost:8000/health > /dev/null; then break; fi
+            STATUS=$(curl -sf localhost:8000/health | tr -d ' ' | grep -o '"status":"[a-z]*"' || true)
+            case "$STATUS" in
+              *'"ok"'|*'"degraded"') break ;;
+            esac
             sleep 2
           done
           # No model is baked in, so degraded is the correct answer here; what is
-          # being tested is that the container boots and serves at all.
-          curl -sf localhost:8000/health | tee /dev/stderr | grep -q '"status"'
+          # being tested is that the container boots, binds its port and finishes
+          # deciding whether it can serve.
+          curl -sf localhost:8000/health | tee /dev/stderr | grep -q '"status":"degraded"'
+          # /ready must disagree with /health while /health is 200, which is the
+          # whole reason the two endpoints exist separately.
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8000/ready)" = "503"
           docker rm -f api

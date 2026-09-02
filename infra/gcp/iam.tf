@@ -79,3 +79,19 @@ resource "google_storage_bucket_iam_member" "runtime_writes_predictions" {
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.runtime.email}"
 }
+
+# Cloud Run writes a container's stdout and stderr to Cloud Logging as the
+# *runtime* identity, so a service account without this role produces a revision
+# that logs absolutely nothing -- not an error, not a stack trace, not uvicorn's
+# startup banner. The failure is silent in both directions: the deploy fails on a
+# startup probe, and the logs that would explain why were dropped on the floor.
+#
+# This does not bite the default compute service account, which carries
+# roles/editor and therefore this permission by inheritance. It bites exactly the
+# least-privilege custom account this file is careful to create, which is what
+# made it invisible until a real apply.
+resource "google_project_iam_member" "runtime_logging" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}
