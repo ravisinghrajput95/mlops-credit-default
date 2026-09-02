@@ -147,7 +147,10 @@ class PredictionResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    status: Literal["ok", "degraded"]
+    # "loading" is distinct from "degraded" on purpose: one resolves itself and
+    # the other does not, and an operator reading a dashboard needs to know which
+    # of the two they are looking at.
+    status: Literal["ok", "loading", "degraded"]
     model_loaded: bool
 
 

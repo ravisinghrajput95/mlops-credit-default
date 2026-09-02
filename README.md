@@ -39,8 +39,15 @@ XGBoost (PR-AUC 0.563) beats the logistic-regression baseline (0.547).
 
 ![MLflow runs comparing XGBoost and logistic regression](docs/images/mlflow-runs.jpg)
 
-**Model registry** — version 1 serves traffic as `@champion` while version 2 sits
-as `@challenger`. Nothing promotes automatically; that gap is the point.
+**Model registry** — the screenshot catches the gap open: version 1 serving as
+`@champion` while version 2 waits as `@challenger`. Nothing promotes
+automatically; that gap is the point.
+
+It closes only when someone runs `make promote`, which points `@champion` at
+whatever `@challenger` currently is — so a promoted registry has both aliases on
+the *same* version, and after eight retrains that is where this one sits today.
+Two aliases on one version means no decision is outstanding; two aliases apart
+means one is.
 
 ![MLflow model registry showing champion and challenger aliases](docs/images/mlflow-registry.jpg)
 
@@ -339,20 +346,40 @@ would have repaid loses one account's margin.
 The cutoff is chosen by minimising expected cost, using a 5:1 ratio between the
 two error types. For a calibrated model the optimum has a closed form,
 `cost_fp / (cost_fn + cost_fp)`, which is what the tests assert against rather
-than checking the search against another run of itself.
+than checking the search against another run of itself. At 5:1 that is 0.167, and
+the grid search lands on 0.17 — the two agreeing is the check.
 
 | | Threshold | Expected cost | Declined |
 | --- | --- | --- | --- |
-| Convention | 0.50 | 0.741 | 17% |
-| **Cost-optimal** | **0.18** | **0.556** | **39%** |
+| Convention | 0.50 | 0.750 | 12% |
+| **Cost-optimal** | **0.17** | **0.545** | **42%** |
 
-That is a 25% reduction in expected cost — and a decline rate that jumps from 17%
-to 39%. **A lender rejecting 39% of applicants is probably commercially
+That is a 27% reduction in expected cost — and a decline rate that jumps from 12%
+to 42%. **A lender rejecting 42% of applicants is probably commercially
 unacceptable**, which is the honest reading of this result: it says the 5:1 ratio
 is a placeholder, not that the business should decline four applicants in ten.
 The ratio is exposed as configuration because it is a business input to be
 derived from exposure at default, recovery rate and per-account margin — not a
 modelling constant to be guessed once.
+
+**This table read 0.18 until recently, and finding out why is the useful part.**
+It was not a typo. Re-running the tuner against the *hand-picked* XGBoost
+reproduces the old row exactly — 0.18, expected cost 0.5555, 0.7411 at the
+convention — so the table was correct for the model it was computed against, and
+simply never regenerated when the Optuna search replaced that model underneath
+it. **A derived number in a README is a cache, and this one went stale silently**,
+because nothing links the prose to the artifact it describes. The shipped model
+carried 0.17 in its metadata the whole time; the page disagreed with the thing it
+was documenting and no test could have noticed.
+
+**It went unnoticed because the optimum is flat.** The cost surface barely moves
+across the neighbouring cutoffs — 0.545 at 0.17, 0.549 at 0.15, 0.550 at 0.18 —
+so any of them captures at least 97% of the 0.205 that moving off 0.50 is worth.
+The second decimal place of this threshold is not a quantity this data resolves,
+which is the honest caveat on quoting it to two of them. What the data does
+resolve is that 0.50 is wrong: choosing it over the optimum costs about forty
+times what choosing the worst cutoff in that flat neighbourhood instead of the
+best one does. The direction is the result; the precision is false comfort.
 
 Two implementation details that matter more than they look:
 
@@ -366,11 +393,14 @@ Two implementation details that matter more than they look:
 
 ### Authentication, and recording who asked
 
-`/predict` and `/model-info` require `Authorization: Bearer <key>`. `/health` and
-`/metrics` do not, and that split is a design decision rather than an oversight:
-Cloud Run's startup and liveness probes hit `/health`, and Prometheus scrapes
-`/metrics` unauthenticated. Putting a key in front of either converts a
-monitoring gap into an outage, or a probe failure into a crash loop.
+`/predict` and `/model-info` require `Authorization: Bearer <key>`. `/health`,
+`/ready` and `/metrics` do not, and that split is a design decision rather than an
+oversight: Cloud Run's liveness probe hits `/health` and its startup probe hits
+`/ready`, and Prometheus scrapes `/metrics` unauthenticated. Putting a key in
+front of any of them converts a monitoring gap into an outage, or a probe failure
+into a crash loop — and on `/ready` specifically it presents as a deploy that
+never goes green rather than as an authentication error, which is the least
+debuggable way for this to fail.
 
 Keys are configured as `name:secret` pairs, and **the name is the point**. A
 credit decision is a regulated act, so the caller is written into the prediction
@@ -436,13 +466,27 @@ logs, and a process started with `REQUIRE_AUTH=true` and no keys exited non-zero
 instead of serving. The `caller` column migration was applied twice against the
 live 26,113-row table with the rows untouched.
 
+**And then against Cloud Run**, which is the environment the design decisions
+above are actually about: the same 401/401/200 sequence held on the deployed
+service, the threshold travelling in the artifact metadata arrived at serving as
+0.17, and a real prediction landed in GCS carrying `caller: batch-scoring`. That
+last one is the whole point of naming the keys — the audit trail is only worth
+building if the name survives the trip from the request header to object storage.
+
 **What is not built:** per-key rate limiting, key rotation or expiry, and any
 authorisation layer — every valid key can do everything. Bearer keys are shared
 secrets with no per-user identity; a lender would want OIDC with a real
-principal. The Terraform change is also the one piece of this repository that has
-been `validate`d but never applied to a live project, since GCP is currently torn
-down — and this README already documents three Terraform defects that only
-appeared on a real apply, so treat it accordingly.
+principal.
+
+**And one thing that is built but should not be trusted at scale.** The key
+reaches the container as a plain Cloud Run environment variable, so it is
+readable in cleartext by anyone who can run `gcloud run services describe` — not
+only by whoever holds the Terraform state, which is the exposure `variables.tf`
+warns about. Those are different blast radii: state lives in one bucket with one
+ACL, while `run.services.get` is a permission handed out casually to anyone
+expected to look at a deployment. A real deployment would put the key in Secret
+Manager and mount the version, which moves the secret behind an access policy of
+its own and leaves an audit log when it is read.
 
 ### The feature store, and the leak the column names invite
 
@@ -675,6 +719,77 @@ append-only and stateful by design — an outcome is a historical fact, and a
 restated label is ignored rather than applied — so it is not a pure function of
 its inputs and does not belong in a `dvc repro` DAG.
 
+### Liveness and readiness are different questions
+
+`/health` answers "is this process alive?" and `/ready` answers "may it be sent
+traffic?". Those are not the same question, and for most of this project's life
+there was only one endpoint answering both — which meant Cloud Run could not tell
+an instance that was still warming from one that would never serve.
+
+The failure that exposed it was not the one the design anticipated. Model loading
+used to happen in the FastAPI lifespan, and **uvicorn binds its listening socket
+only after lifespan startup returns**. So for the entire load the port was simply
+closed: a probe got a refused connection rather than an answer, and Cloud Run
+reported `ERROR_CONNECTION_FAILED` with no application log to explain it. On the
+real service that was 7m12s of shut port.
+
+The graceful-degradation design — a missing model reports degraded health rather
+than crash-looping — only ever covered a load that *failed*. A load that was
+merely *slow* defeated it completely, because there was nothing listening to
+report the degradation with. **Binding the socket first and loading afterwards is
+what makes that promise true in both cases**, so the model now loads on a worker
+thread and the port opens immediately.
+
+Two independent fixes were needed, and separating them is what makes the numbers
+mean anything. Each row below is one measurement against one state of the
+container, on the live service:
+
+| State | Measured |
+| --- | --- |
+| Throttled startup (`cpu_idle`, no boost) | **5m07s** to uvicorn's first log line |
+| `startup_cpu_boost` added | **1m40s** to that same line |
+| Model still loading on the startup path | port shut for **7m12s** — the entire load |
+| Model moved to a worker thread | port bound and answering at **1m15s** |
+
+The first two rows are the CPU fix. `cpu_idle = true` bills CPU only while a
+request is in flight, and container *startup* counts as not-in-flight — so the
+throttled container spent five minutes doing nothing but `import sklearn`,
+`import xgboost`, `import mlflow`. `startup_cpu_boost` applies only to the startup
+window, which is exactly the window scale-to-zero guarantees will happen often,
+and costs nothing on the free tier. Keeping the two fixes apart matters because
+the boost alone does not solve this: it cut the import time by two thirds and the
+port was still shut for seven minutes afterwards.
+
+With the port open the two probes can finally give different answers at the same
+time, which is the entire point:
+
+| | `/health` (liveness) | `/ready` (startup, readiness) |
+| --- | --- | --- |
+| Model still loading | 200 `loading` | 503 |
+| Model failed to load | 200 `degraded` | 503 |
+| Model loaded | 200 `ok` | 200 |
+
+`/health` never fails on a model problem, because restarting a live process
+because its model is missing replaces a degraded service with a crash loop.
+`/ready` fails until the model is genuinely there, so no traffic is routed to an
+instance that would only 503 it, and a revision whose model cannot load never
+takes traffic away from the revision already serving.
+
+`loading` and `degraded` are separate statuses on purpose: one resolves itself and
+the other never will, and an operator reading a dashboard at 3am needs to know
+which of the two they are looking at. Collapsing them into "degraded" hid a
+healthy cold start inside the same signal as a broken model.
+
+A test asserts the property directly rather than the symptom — it holds the
+loader open and checks that startup has already completed and the app is
+answering while the load is still in flight. If anyone moves the load back onto
+the startup path, that test blocks and times out instead of quietly regressing.
+
+**Cold start is 5–6 minutes to `/ready`** on the free tier, which is why the
+startup probe's budget is ten minutes rather than the 70 seconds it began with.
+That budget is a ceiling and not a wait: a probe that answers sooner proceeds
+sooner, and the cost of setting it too low is a deploy that fails.
+
 ### No managed database in the cloud
 
 Cloud SQL has no always-free tier and would have been the only line item on the
@@ -695,7 +810,7 @@ Portfolio projects are easy to oversell. To be explicit:
 | Feature store and its time axis | **Real.** The six monthly observations are in the source data. |
 | Model and metrics | **Real.** Reproducible with `make pipeline`. |
 | Serving, monitoring, CI/CD | **Real.** Runs locally; CI runs on every push. |
-| API authentication | **Real**, and off by default. The Terraform half is unapplied. |
+| API authentication | **Real**, and off by default. Applied and verified on Cloud Run. |
 | **Data drift** | **Simulated.** See below. |
 | **Label arrival times** | **Simulated.** The labels and the censoring are real. See below. |
 | Cloud deployment | **Real but ephemeral.** Torn down between demos. |
@@ -854,7 +969,7 @@ surprise bill:
   so a stray region silently turns Rs 0 into a real charge.
 - **Cloud Run scales to zero**, so an idle service costs nothing.
 
-This has been run for real, not just written. All 25 resources applied to a live
+This has been run for real, not just written. All 28 resources applied to a live
 project, Cloud Run served the champion model loaded from GCS with predictions
 written back as date-partitioned Parquet, the CD workflow deployed a new revision
 authenticating through Workload Identity Federation with no stored key — and then
@@ -863,8 +978,10 @@ everything was destroyed. Total spend: Rs 0.
 `terraform destroy` is the intended steady state, which is why the README leans on
 screenshots rather than a permanently running URL.
 
-Three defects in this Terraform only appeared on a real apply, never in
-`validate`:
+**Seven defects in this deployment only appeared on a real apply, never in
+`validate`.** That count is the argument for applying at least once: a clean plan
+tells you the configuration is well-formed, not that it works. Three came from the
+first apply:
 
 - `iam.googleapis.com` was missing from the enabled-services list, so service
   account creation failed with `accessNotConfigured`.
@@ -875,6 +992,38 @@ Three defects in this Terraform only appeared on a real apply, never in
 - Nothing actually enforced "budget first". That ordering was left to Terraform's
   scheduler, which created Cloud Run and both buckets in the same run where the
   budget errored. The billable resources now `depends_on` the budget explicitly.
+
+Four more came from applying the authentication work, and they are worth reading
+in order because the first one is why the other three were hard to find:
+
+- **The runtime service account had no `roles/logging.logWriter`.** Cloud Run
+  writes a container's stdout as the *runtime* identity, so the revision produced
+  no logs at all — no stack trace, no uvicorn banner, nothing. The deploy failed
+  on a startup probe and the logs that would have said why were dropped on the
+  floor. This cannot bite the default compute service account, which carries
+  `roles/editor` and therefore this permission by inheritance. It bites exactly
+  the least-privilege custom account this repository is careful to create, which
+  is why no amount of `validate` would ever have surfaced it.
+- **`cpu_idle = true` with no `startup_cpu_boost`** throttled startup so hard the
+  container took 5m07s to reach uvicorn's first log line. See
+  [Liveness and readiness](#liveness-and-readiness-are-different-questions).
+- **The model loaded on the FastAPI startup path**, so the port stayed closed for
+  the whole load and the probe got a refused connection rather than a degraded
+  answer. Same section.
+- **CD's `gcloud run deploy --set-env-vars` replaced the entire environment**,
+  wiping the `REQUIRE_AUTH` and `API_KEYS` that Terraform sets. `REQUIRE_AUTH`
+  then defaults to `false`, so the service did not fail closed — it started
+  happily and served anyone. Now `--update-env-vars`, and Terraform owns the
+  service configuration while the workflow owns only the image.
+
+The last one deserves a second paragraph, because the bug is not the interesting
+part. **The post-deploy smoke test would have gone green against a wide-open
+service.** It probed `/health`, which is public by design and therefore answers
+200 whether or not authentication survived the deploy. A check that cannot fail
+is not a check. It now reads `REQUIRE_AUTH` back off the deployed service rather
+than assuming it, and when it is on, asserts that `/model-info` answers 401 to an
+anonymous caller. **This is the one fix on this page that has not itself been
+verified by running** — the workflow has not fired since it was changed.
 
 ### Notes for anyone reproducing this
 
@@ -900,6 +1049,19 @@ Environment problems that cost real time here, in case they save you some:
   service name is added to `--allowed-hosts`.
 - **MLflow needs `--serve-artifacts`**, or it hands clients its own artifact path
   and they try to write it on their own filesystem.
+- **`terraform destroy` does not fully delete a Workload Identity pool.** It goes
+  into a 30-day soft-delete, and so does its OIDC provider — separately. Bringing
+  the stack back up means undeleting *both* and `terraform import`ing both before
+  the next apply; recreating them fails with `ALREADY_EXISTS` against a resource
+  nothing can see. The provider is the easy one to miss, because undeleting the
+  pool does not bring it back with it.
+- **The first apply cannot ship the real image.** `var.image` defaults to a
+  hello-world placeholder because Artifact Registry does not exist yet and there
+  is nowhere to push to. So bringing the stack up is two applies: one to create
+  the registry, then push, then a second to swap the image in.
+- **Build `--platform linux/amd64` on Apple silicon.** A native arm64 image pushes
+  and deploys without complaint and then fails to start on Cloud Run, which is a
+  slow way to find out.
 
 The API image is 249 MB compressed, against a 400 MB CI budget and Artifact
 Registry's 500 MB free tier.

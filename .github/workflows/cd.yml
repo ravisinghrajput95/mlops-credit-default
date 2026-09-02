@@ -59,6 +59,12 @@ jobs:
           docker push "$IMAGE:latest"
           echo "image=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
+      # --update-env-vars, never --set-env-vars. The latter replaces the entire
+      # environment, so this step used to delete the REQUIRE_AUTH and API_KEYS
+      # that Terraform sets -- silently turning authentication off on every
+      # deploy. REQUIRE_AUTH then defaults to false, so the API does not even fail
+      # closed: it starts happily and serves anyone. Terraform owns the service's
+      # configuration; this workflow owns only the image.
       - name: Deploy
         run: |
           gcloud run deploy credit-default-api \
@@ -69,20 +75,51 @@ jobs:
             --min-instances 0 \
             --max-instances 2 \
             --memory 1Gi \
-            --set-env-vars "MODEL_SOURCE=gcs,GCS_MODEL_URI=${{ vars.GCS_MODEL_URI }},PREDICTION_SINK=gcs,GCS_PREDICTION_PREFIX=${{ vars.GCS_PREDICTION_PREFIX }}"
+            --update-env-vars "MODEL_SOURCE=gcs,GCS_MODEL_URI=${{ vars.GCS_MODEL_URI }},PREDICTION_SINK=gcs,GCS_PREDICTION_PREFIX=${{ vars.GCS_PREDICTION_PREFIX }}"
 
+      # /health alone cannot verify this deployment. It is public by design, so it
+      # answers 200 whether or not authentication survived the deploy -- a smoke
+      # test built on it goes green against a wide-open service. That is exactly
+      # how the --set-env-vars bug above would have reached production unnoticed.
+      # So the check also asserts that a protected endpoint still rejects an
+      # anonymous caller.
       - name: Verify the deployment serves traffic
         run: |
           URL=$(gcloud run services describe credit-default-api \
             --region "${{ vars.GCP_REGION }}" --format 'value(status.url)')
           echo "Deployed to $URL"
-          for i in $(seq 1 20); do
-            if curl -sf "$URL/health" | grep -q '"status":"ok"'; then
-              echo "Health check passed."
-              echo "### Deployed to $URL" >> "$GITHUB_STEP_SUMMARY"
-              exit 0
+
+          ready=false
+          for i in $(seq 1 60); do
+            if curl -sf "$URL/ready" | grep -q '"status":"ok"'; then
+              echo "Readiness check passed."
+              ready=true
+              break
             fi
-            sleep 5
+            sleep 10
           done
-          echo "::error::The service did not become healthy."
-          exit 1
+          if [ "$ready" != "true" ]; then
+            echo "::error::The service did not become ready."
+            exit 1
+          fi
+
+          # Whether auth is meant to be on is a property of the deployed service,
+          # not of this workflow, so read it back rather than assuming.
+          REQUIRE_AUTH=$(gcloud run services describe credit-default-api \
+            --region "${{ vars.GCP_REGION }}" \
+            --format 'value(spec.template.spec.containers[0].env)' \
+            | tr ';' '\n' | grep -o "'name': 'REQUIRE_AUTH', 'value': '[^']*'" \
+            | sed "s/.*'value': '//; s/'$//")
+
+          if [ "$REQUIRE_AUTH" = "true" ]; then
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/model-info")
+            if [ "$CODE" != "401" ]; then
+              echo "::error::REQUIRE_AUTH is true but /model-info answered $CODE to an anonymous caller, not 401. Authentication did not survive the deploy."
+              exit 1
+            fi
+            echo "Authentication verified: /model-info rejects an anonymous caller with 401."
+          else
+            echo "::warning::REQUIRE_AUTH is not true on this service; /predict is serving unauthenticated."
+          fi
+
+          echo "### Deployed to $URL" >> "$GITHUB_STEP_SUMMARY"

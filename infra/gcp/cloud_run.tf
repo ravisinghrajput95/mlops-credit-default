@@ -25,6 +25,15 @@ resource "google_cloud_run_v2_service" "api" {
         # CPU is allocated only while a request is in flight, which is the
         # billing mode the free tier assumes.
         cpu_idle = true
+
+        # ...but "only while a request is in flight" includes container startup,
+        # and this container spends that window importing sklearn, xgboost and
+        # mlflow. Throttled, that took 5m07s to reach uvicorn's first log line --
+        # before any model loading at all -- so the instance could never pass its
+        # own startup probe and every deploy failed with ERROR_CONNECTION_FAILED.
+        # The boost is free: it applies only to the startup window, which is
+        # exactly the window scale-to-zero guarantees will happen often.
+        startup_cpu_boost = true
       }
 
       env {
@@ -66,15 +75,32 @@ resource "google_cloud_run_v2_service" "api" {
         container_port = 8000
       }
 
+      # The two probes ask different questions and must therefore hit different
+      # endpoints. Pointing both at /health -- which this did -- means the only
+      # answer available is "the process is up", so Cloud Run cannot tell an
+      # instance that is still warming from one that will never serve.
+      #
+      # /ready is 503 until the model is actually loaded, so no traffic reaches an
+      # instance that would only 503 it, and a revision whose model cannot load
+      # never takes traffic from the revision already serving.
+      #
+      # The budget is large because the real cold start was measured, not guessed:
+      # 1m40s to uvicorn's first log line and 5m32s to load the model, 7m12s in
+      # total. The old 70s budget was never survivable by this container. Note
+      # this is a ceiling, not a wait -- a probe that answers sooner proceeds
+      # sooner, and the cost of setting it too low is a deploy that fails.
       startup_probe {
         http_get {
-          path = "/health"
+          path = "/ready"
         }
         initial_delay_seconds = 10
-        period_seconds        = 5
-        failure_threshold     = 12
+        period_seconds        = 10
+        failure_threshold     = 60
       }
 
+      # Liveness stays on /health, which reports 200 whenever the process can
+      # answer at all. Restarting a live process because its model is missing
+      # replaces a degraded service with a crash loop.
       liveness_probe {
         http_get {
           path = "/health"
