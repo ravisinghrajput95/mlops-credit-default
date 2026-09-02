@@ -6,6 +6,8 @@ prediction sink, so the suite runs anywhere with no external dependencies.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 from xgboost import XGBClassifier
@@ -43,6 +45,10 @@ def client(monkeypatch):
     monkeypatch.setattr(api_main.state, "sink", NullSink())
     # lifespan would try to load a real model; the state above is what we want tested.
     with TestClient(api_main.app) as test_client:
+        # The model now loads on a worker thread, so the load attempt has to be
+        # allowed to finish before the test model is injected -- otherwise the
+        # loader is still running and races with the assignment below.
+        api_main.state.load_complete.wait(timeout=30)
         monkeypatch.setattr(api_main.state, "model", ModelHandle(pipeline, "test-1", "local"))
         monkeypatch.setattr(api_main.state, "sink", NullSink())
         yield test_client
@@ -57,8 +63,96 @@ def test_health_reports_ok_when_model_loaded(client):
 def test_health_reports_degraded_without_a_model(client, monkeypatch):
     """A missing model must surface as degraded, not as a crash loop."""
     monkeypatch.setattr(api_main.state, "model", None)
+    monkeypatch.setattr(api_main.state, "load_failed", True)
     body = client.get("/health").json()
     assert body == {"status": "degraded", "model_loaded": False}
+
+
+def test_health_distinguishes_a_slow_load_from_a_failed_one(client, monkeypatch):
+    """ "Not loaded yet" and "tried and failed" must not look the same.
+
+    They resolve differently -- one on its own, one never -- so an operator
+    reading the dashboard needs to be able to tell them apart. Reporting both as
+    "degraded" hid a healthy cold start inside the same signal as a broken model.
+    """
+    monkeypatch.setattr(api_main.state, "model", None)
+    monkeypatch.setattr(api_main.state, "load_failed", False)
+    assert client.get("/health").json() == {"status": "loading", "model_loaded": False}
+
+    monkeypatch.setattr(api_main.state, "load_failed", True)
+    assert client.get("/health").json() == {"status": "degraded", "model_loaded": False}
+
+
+def test_readiness_and_liveness_disagree_while_the_model_is_still_loading(client, monkeypatch):
+    """The whole point of splitting the two probes.
+
+    /health answers 200 so the orchestrator does not kill a process that is
+    merely still starting; /ready answers 503 so no traffic is routed to an
+    instance that cannot serve it. Pointing both probes at /health -- which is
+    what the deployment used to do -- makes those two answers impossible to give
+    at the same time.
+    """
+    monkeypatch.setattr(api_main.state, "model", None)
+    monkeypatch.setattr(api_main.state, "load_failed", False)
+
+    assert client.get("/health").status_code == 200
+    assert client.get("/ready").status_code == 503
+
+
+def test_readiness_turns_green_once_the_model_is_loaded(client):
+    assert client.get("/ready").status_code == 200
+    assert client.get("/ready").json() == {"status": "ok", "model_loaded": True}
+
+
+def test_startup_completes_before_the_model_finishes_loading(monkeypatch):
+    """The defect this whole split exists to fix, asserted directly.
+
+    uvicorn binds the listening socket only *after* lifespan startup returns, so
+    loading the model on the startup path keeps the port closed for the entire
+    load. Nothing is listening to report the degradation the design promises, and
+    a health probe gets a refused connection instead of an answer. On Cloud Run
+    that was 7m12s of closed socket and a deploy that failed with
+    ERROR_CONNECTION_FAILED and no application log to explain it.
+
+    So: startup must complete while the load is still in flight. If someone moves
+    the load back onto the startup path, entering the context manager below will
+    block until the loader is released and this test will time out rather than
+    quietly regressing.
+    """
+    monkeypatch.setattr(api_main.state, "model", None)
+
+    loader_entered = threading.Event()
+    release_loader = threading.Event()
+
+    def slow_load(settings):
+        loader_entered.set()
+        release_loader.wait(timeout=30)
+        raise RuntimeError("deliberately never produces a model")
+
+    monkeypatch.setattr(api_main, "load_model", slow_load)
+
+    with TestClient(api_main.app) as test_client:
+        assert loader_entered.wait(timeout=10), "the background loader never started"
+        assert not api_main.state.load_complete.is_set(), (
+            "startup waited for the load to finish, which is the bug: "
+            "the port stays closed for as long as the load takes"
+        )
+
+        # The socket is open and answering while the model is still in flight,
+        # which is exactly what the old arrangement could not do.
+        assert test_client.get("/health").json() == {
+            "status": "loading",
+            "model_loaded": False,
+        }
+        assert test_client.get("/ready").status_code == 503
+
+        release_loader.set()
+        assert api_main.state.load_complete.wait(timeout=15)
+        assert api_main.state.load_failed is True
+        assert test_client.get("/health").json() == {
+            "status": "degraded",
+            "model_loaded": False,
+        }
 
 
 def test_model_info_lists_the_expected_features(client):

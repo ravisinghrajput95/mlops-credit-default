@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -44,6 +45,7 @@ from credit_default.config import (
     AUDIT_ATTRIBUTES,
     FEATURES,
     PROTECTED_ATTRIBUTES,
+    Settings,
     get_settings,
 )
 
@@ -72,6 +74,15 @@ class AppState:
     # AttributeError. Every deployed path goes through the lifespan.
     auth: Authenticator = Authenticator([], required=False)
 
+    # Set once the background load has finished, whether it succeeded or failed.
+    # Callers that need determinism (tests, mainly) wait on it rather than
+    # sleeping; nothing on the serving path blocks on it.
+    load_complete: threading.Event = threading.Event()
+    # Distinguishes "not loaded yet" from "tried and failed". /health conflated
+    # the two before, which made a slow start and a broken model look identical
+    # to whoever was paged.
+    load_failed: bool = False
+
 
 state = AppState()
 
@@ -90,6 +101,26 @@ def require_caller(
 Caller = Annotated[str, Depends(require_caller)]
 
 
+def _load_model_into_state(settings: Settings) -> None:
+    """Load the champion into ``state``. Runs on a worker thread, never the startup path.
+
+    Deliberately does not set ``state.model = None`` on failure. The attribute is
+    already ``None`` unless something else deliberately populated it, and
+    clobbering it here would let a slow, failing background load overwrite a model
+    that a caller had injected.
+    """
+    try:
+        state.model = load_model(settings)
+        logger.info("Model loaded; the API is now ready to serve.")
+    except Exception:
+        # /health stays 200 so the orchestrator does not kill a live process over
+        # a model problem; /ready turns 503 so no traffic is routed to it.
+        state.load_failed = True
+        logger.exception("Model failed to load; the API will report degraded health.")
+    finally:
+        state.load_complete.set()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -102,15 +133,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # is plainly failing to start.
     state.auth = build_authenticator(settings.api_keys.get_secret_value(), settings.require_auth)
 
-    try:
-        state.model = load_model(settings)
-    except Exception:
-        # /health reports degraded rather than crash-looping the container, which
-        # makes the failure visible in the orchestrator instead of as a restart storm.
-        logger.exception("Model failed to load; the API will report degraded health.")
-        state.model = None
-
     state.sink = build_sink(settings)
+
+    # The model is loaded on a worker thread rather than here, and that is a
+    # correctness fix rather than an optimisation.
+    #
+    # uvicorn binds the listening socket only *after* lifespan startup returns.
+    # Loading the model here therefore kept the port closed for the entire load,
+    # so a health probe got a refused connection rather than an answer -- which is
+    # precisely the crash loop the degraded-health design exists to avoid. On
+    # Cloud Run the socket stayed shut for 7m12s and every deploy failed with
+    # ERROR_CONNECTION_FAILED, with no application log to say why.
+    #
+    # The graceful degradation only ever covered a load that *failed*. A load that
+    # was merely *slow* defeated it, because there was nothing listening to report
+    # the degradation. Binding first and loading after is what makes the promise
+    # true for both.
+    state.load_complete = threading.Event()
+    state.load_failed = False
+    threading.Thread(
+        target=_load_model_into_state,
+        args=(settings,),
+        name="model-loader",
+        daemon=True,
+    ).start()
+
     yield
     state.sink.close()
 
@@ -137,8 +184,34 @@ def _record(
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    loaded = state.model is not None
-    return HealthResponse(status="ok" if loaded else "degraded", model_loaded=loaded)
+    """Liveness: is this process alive? Always 200 while it can answer at all.
+
+    A model problem is not a reason to kill a running process, so this never
+    fails the way ``/ready`` does. The two probes answer different questions and
+    pointing both at this one -- which is what the deployment used to do -- means
+    the orchestrator cannot tell "starting up" from "cannot serve".
+    """
+    if state.model is not None:
+        return HealthResponse(status="ok", model_loaded=True)
+    if state.load_failed:
+        return HealthResponse(status="degraded", model_loaded=False)
+    return HealthResponse(status="loading", model_loaded=False)
+
+
+@app.get("/ready", response_model=HealthResponse)
+def ready() -> HealthResponse:
+    """Readiness: may this instance be sent traffic yet?
+
+    503 until the model is actually loaded, so a startup probe waits for a slow
+    load instead of timing out on a closed port, and a revision whose model
+    cannot load never takes traffic from the one already serving.
+    """
+    if state.model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="degraded" if state.load_failed else "loading",
+        )
+    return HealthResponse(status="ok", model_loaded=True)
 
 
 @app.get("/model-info", response_model=ModelInfoResponse)
