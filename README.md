@@ -1128,3 +1128,10 @@ live MLflow server, so `make test` works offline.
 
 **Stack:** Python 3.12 · scikit-learn · XGBoost · MLflow · FastAPI · Evidently ·
 Prefect · DVC · Docker · Prometheus · Grafana · Terraform · GitHub Actions
+
+---
+
+## License
+
+[MIT](LICENSE). The UCI dataset is redistributed by nobody here — it is
+downloaded at runtime from its original source and carries its own terms.
