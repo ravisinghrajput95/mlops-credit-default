@@ -1055,7 +1055,7 @@ whole stack was rebuilt from nothing, exercised, and destroyed again:
 | Check | Result |
 | --- | --- |
 | Resources applied | 26 created + 2 imported = **28**; `destroy` removed 28 |
-| Image before CD / after | `cloudrun/container/hello` → `api:62bb808`, the merge commit |
+| Image before CD / after | `cloudrun/container/hello` → `api:<merge commit SHA>`, the real image |
 | `REQUIRE_AUTH` across the deploy | `true` before, **`true` after** |
 | `API_KEYS` across the deploy | present before, **present after** |
 | CD's own auth assertion | fired and passed, not the fall-through warning |
